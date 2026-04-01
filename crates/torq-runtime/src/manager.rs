@@ -1,12 +1,10 @@
 use anyhow::{anyhow, Result};
-use tokio::process::Child;
 use tokio::sync::{broadcast, mpsc, watch};
-use tokio::task::JoinHandle;
 use torq_core::{TorCommand, TorEvent, TorState};
 
 use crate::config::TorRuntimeConfig;
-use crate::logs;
-use crate::process;
+use crate::logs::LogTail;
+use crate::process::TorProcess;
 use crate::state;
 
 pub struct TorManager {
@@ -15,9 +13,9 @@ pub struct TorManager {
     event_tx: broadcast::Sender<TorEvent>,
 }
 
-struct ManagedRuntime {
-    child: Child,
-    log_task: JoinHandle<()>,
+struct RuntimeSession {
+    process: TorProcess,
+    logs: LogTail,
 }
 
 impl TorManager {
@@ -26,8 +24,6 @@ impl TorManager {
         let (runtime_event_tx, runtime_event_rx) = mpsc::unbounded_channel();
         let (state_tx, state_rx) = watch::channel(TorState::default());
         let (event_tx, _) = broadcast::channel(256);
-
-        logs::prepare_log_file(&config.log_path).await?;
 
         tokio::spawn(run_state_store(
             runtime_event_rx,
@@ -96,56 +92,35 @@ async fn run_supervisor(
     mut command_rx: mpsc::Receiver<TorCommand>,
     runtime_event_tx: mpsc::UnboundedSender<TorEvent>,
 ) {
-    let mut runtime: Option<ManagedRuntime> = None;
+    let mut session: Option<RuntimeSession> = None;
 
     loop {
-        if runtime.is_some() {
+        if session.is_some() {
             let next_action = {
-                let active_runtime = runtime.as_mut().expect("runtime exists");
+                let active_session = session.as_mut().expect("runtime session exists");
                 tokio::select! {
                     command = command_rx.recv() => SupervisorAction::Command(command),
-                    wait_result = process::wait_for_exit(&mut active_runtime.child) => SupervisorAction::ProcessExited(wait_result),
+                    wait_result = active_session.process.wait() => SupervisorAction::ProcessExited(wait_result),
                 }
             };
 
             match next_action {
                 SupervisorAction::Command(Some(command)) => {
-                    handle_command(command, &config, &mut runtime, &runtime_event_tx).await;
+                    handle_command(command, &config, &mut session, &runtime_event_tx).await;
                 }
                 SupervisorAction::Command(None) => {
-                    if let Some(active_runtime) = runtime.take() {
-                        let _ = shutdown_runtime(&config, active_runtime, &runtime_event_tx, true)
+                    if let Some(mut active_session) = session.take() {
+                        let _ = stop_session(&mut active_session, &config, &runtime_event_tx, true)
                             .await;
                     }
                     break;
                 }
                 SupervisorAction::ProcessExited(wait_result) => {
-                    if let Some(active_runtime) = runtime.take() {
-                        active_runtime.log_task.abort();
-                        let _ = active_runtime.log_task.await;
+                    if let Some(active_session) = session.take() {
+                        active_session.logs.stop().await;
                     }
 
-                    match wait_result {
-                        Ok(status) if status.success() => {
-                            emit_event(&runtime_event_tx, TorEvent::Stopped);
-                        }
-                        Ok(status) => {
-                            emit_event(
-                                &runtime_event_tx,
-                                TorEvent::Crashed(format!(
-                                    "tor exited unexpectedly with status: {status}"
-                                )),
-                            );
-                        }
-                        Err(error) => {
-                            emit_event(
-                                &runtime_event_tx,
-                                TorEvent::Crashed(format!(
-                                    "failed to wait for tor process: {error}"
-                                )),
-                            );
-                        }
-                    }
+                    publish_exit_event(wait_result, &runtime_event_tx);
                 }
             }
         } else {
@@ -153,7 +128,7 @@ async fn run_supervisor(
                 break;
             };
 
-            handle_command(command, &config, &mut runtime, &runtime_event_tx).await;
+            handle_command(command, &config, &mut session, &runtime_event_tx).await;
         }
     }
 }
@@ -161,12 +136,12 @@ async fn run_supervisor(
 async fn handle_command(
     command: TorCommand,
     config: &TorRuntimeConfig,
-    runtime: &mut Option<ManagedRuntime>,
+    session: &mut Option<RuntimeSession>,
     runtime_event_tx: &mpsc::UnboundedSender<TorEvent>,
 ) {
     match command {
         TorCommand::Start => {
-            if runtime.is_some() {
+            if session.is_some() {
                 emit_event(
                     runtime_event_tx,
                     TorEvent::Warning("tor is already running".to_string()),
@@ -174,9 +149,9 @@ async fn handle_command(
                 return;
             }
 
-            match start_runtime(config, runtime_event_tx).await {
-                Ok(active_runtime) => {
-                    *runtime = Some(active_runtime);
+            match start_session(config, runtime_event_tx).await {
+                Ok(active_session) => {
+                    *session = Some(active_session);
                     emit_event(runtime_event_tx, TorEvent::Started);
                 }
                 Err(error) => {
@@ -185,7 +160,7 @@ async fn handle_command(
             }
         }
         TorCommand::Stop => {
-            let Some(active_runtime) = runtime.take() else {
+            let Some(mut active_session) = session.take() else {
                 emit_event(
                     runtime_event_tx,
                     TorEvent::Warning("tor is not running".to_string()),
@@ -194,24 +169,26 @@ async fn handle_command(
             };
 
             if let Err(error) =
-                shutdown_runtime(config, active_runtime, runtime_event_tx, true).await
+                stop_session(&mut active_session, config, runtime_event_tx, true).await
             {
                 emit_event(runtime_event_tx, TorEvent::Error(error.to_string()));
+                *session = Some(active_session);
             }
         }
         TorCommand::Restart => {
-            if let Some(active_runtime) = runtime.take() {
+            if let Some(mut active_session) = session.take() {
                 if let Err(error) =
-                    shutdown_runtime(config, active_runtime, runtime_event_tx, true).await
+                    stop_session(&mut active_session, config, runtime_event_tx, true).await
                 {
                     emit_event(runtime_event_tx, TorEvent::Error(error.to_string()));
+                    *session = Some(active_session);
                     return;
                 }
             }
 
-            match start_runtime(config, runtime_event_tx).await {
-                Ok(active_runtime) => {
-                    *runtime = Some(active_runtime);
+            match start_session(config, runtime_event_tx).await {
+                Ok(active_session) => {
+                    *session = Some(active_session);
                     emit_event(runtime_event_tx, TorEvent::Started);
                 }
                 Err(error) => {
@@ -231,38 +208,63 @@ async fn handle_command(
     }
 }
 
-async fn start_runtime(
+async fn start_session(
     config: &TorRuntimeConfig,
     runtime_event_tx: &mpsc::UnboundedSender<TorEvent>,
-) -> Result<ManagedRuntime> {
-    logs::prepare_log_file(&config.log_path).await?;
-
-    let child = process::spawn_process(config).await?;
-    let log_task = logs::spawn_log_task(
+) -> Result<RuntimeSession> {
+    let logs = LogTail::spawn(
         config.log_path.clone(),
         config.log_poll_interval,
         runtime_event_tx.clone(),
-    );
+    )
+    .await?;
 
-    Ok(ManagedRuntime { child, log_task })
+    match TorProcess::spawn(config).await {
+        Ok(process) => Ok(RuntimeSession { process, logs }),
+        Err(error) => {
+            logs.stop().await;
+            Err(error)
+        }
+    }
 }
 
-async fn shutdown_runtime(
+async fn stop_session(
+    session: &mut RuntimeSession,
     config: &TorRuntimeConfig,
-    mut runtime: ManagedRuntime,
     runtime_event_tx: &mpsc::UnboundedSender<TorEvent>,
     emit_stopped: bool,
 ) -> Result<()> {
-    runtime.log_task.abort();
-    let _ = runtime.log_task.await;
-
-    process::stop_process(&mut runtime.child, config.stop_timeout).await?;
+    session.process.stop(config.stop_timeout).await?;
+    session.logs.stop().await;
 
     if emit_stopped {
         emit_event(runtime_event_tx, TorEvent::Stopped);
     }
 
     Ok(())
+}
+
+fn publish_exit_event(
+    wait_result: std::io::Result<std::process::ExitStatus>,
+    runtime_event_tx: &mpsc::UnboundedSender<TorEvent>,
+) {
+    match wait_result {
+        Ok(status) if status.success() => {
+            emit_event(runtime_event_tx, TorEvent::Stopped);
+        }
+        Ok(status) => {
+            emit_event(
+                runtime_event_tx,
+                TorEvent::Crashed(format!("tor exited unexpectedly with status: {status}")),
+            );
+        }
+        Err(error) => {
+            emit_event(
+                runtime_event_tx,
+                TorEvent::Crashed(format!("failed to wait for tor process: {error}")),
+            );
+        }
+    }
 }
 
 async fn run_state_store(

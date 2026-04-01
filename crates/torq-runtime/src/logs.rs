@@ -10,6 +10,35 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use torq_core::TorEvent;
 
+pub struct LogTail {
+    task: Option<JoinHandle<()>>,
+}
+
+impl LogTail {
+    pub async fn spawn(
+        log_path: PathBuf,
+        poll_interval: Duration,
+        event_tx: mpsc::UnboundedSender<TorEvent>,
+    ) -> Result<Self> {
+        prepare_log_file(&log_path).await?;
+
+        let task = tokio::spawn(async move {
+            if let Err(error) = tail_log_file(log_path, poll_interval, event_tx.clone()).await {
+                let _ = event_tx.send(TorEvent::Error(error.to_string()));
+            }
+        });
+
+        Ok(Self { task: Some(task) })
+    }
+
+    pub async fn stop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
 pub async fn prepare_log_file(log_path: &Path) -> Result<()> {
     if let Some(parent) = log_path
         .parent()
@@ -29,18 +58,6 @@ pub async fn prepare_log_file(log_path: &Path) -> Result<()> {
         .with_context(|| format!("failed to prepare log file {}", log_path.display()))?;
 
     Ok(())
-}
-
-pub fn spawn_log_task(
-    log_path: PathBuf,
-    poll_interval: Duration,
-    event_tx: mpsc::UnboundedSender<TorEvent>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if let Err(error) = tail_log_file(log_path, poll_interval, event_tx.clone()).await {
-            let _ = event_tx.send(TorEvent::Error(error.to_string()));
-        }
-    })
 }
 
 pub fn parse_bootstrap_percentage(line: &str) -> Option<u8> {

@@ -1,48 +1,63 @@
 use torq_core::{RuntimeStatus, TorEvent, TorResult, TorState};
 
-pub fn apply_event(state: &mut TorState, event: &TorEvent) -> TorResult<()> {
-    match event {
-        TorEvent::Started => {
-            state.status = RuntimeStatus::Starting;
+pub struct TorStateReducer;
+
+impl TorStateReducer {
+    pub fn apply_event(state: &mut TorState, event: &TorEvent) -> TorResult<()> {
+        match event {
+            TorEvent::Started => {
+                state.status = RuntimeStatus::Starting;
+            }
+            TorEvent::Stopped => {
+                *state = TorState::stopped();
+            }
+            TorEvent::StartFailed(_) | TorEvent::Crashed(_) => {
+                state.status = RuntimeStatus::Failed;
+                state.bootstrap = 0;
+            }
+            TorEvent::Bootstrap(bootstrap) => {
+                state.set_bootstrap(*bootstrap)?;
+                state.status = if *bootstrap >= 100 {
+                    RuntimeStatus::Running
+                } else {
+                    RuntimeStatus::Starting
+                };
+            }
+            TorEvent::Warning(_) | TorEvent::Error(_) | TorEvent::LogLine(_) => {}
         }
-        TorEvent::Stopped => {
-            *state = TorState::stopped();
-        }
-        TorEvent::StartFailed(_) | TorEvent::Crashed(_) => {
-            state.status = RuntimeStatus::Failed;
-            state.bootstrap = 0;
-        }
-        TorEvent::Bootstrap(bootstrap) => {
-            state.set_bootstrap(*bootstrap)?;
-            state.status = if *bootstrap >= 100 {
-                RuntimeStatus::Running
-            } else {
-                RuntimeStatus::Starting
-            };
-        }
-        TorEvent::Warning(_) | TorEvent::Error(_) | TorEvent::LogLine(_) => {}
+
+        state.validate()?;
+        Ok(())
     }
 
-    state.validate()?;
-    Ok(())
+    pub fn reduce_events<I>(events: I) -> TorResult<TorState>
+    where
+        I: IntoIterator<Item = TorEvent>,
+    {
+        let mut state = TorState::default();
+
+        for event in events {
+            Self::apply_event(&mut state, &event)?;
+        }
+
+        Ok(state)
+    }
+}
+
+pub fn apply_event(state: &mut TorState, event: &TorEvent) -> TorResult<()> {
+    TorStateReducer::apply_event(state, event)
 }
 
 pub fn reduce_events<I>(events: I) -> TorResult<TorState>
 where
     I: IntoIterator<Item = TorEvent>,
 {
-    let mut state = TorState::default();
-
-    for event in events {
-        apply_event(&mut state, &event)?;
-    }
-
-    Ok(state)
+    TorStateReducer::reduce_events(events)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_event, reduce_events};
+    use super::{apply_event, reduce_events, TorStateReducer};
     use torq_core::{RuntimeStatus, TorEvent, TorState};
 
     #[test]
@@ -59,7 +74,7 @@ mod tests {
     fn bootstrap_hundred_marks_running() {
         let mut state = TorState::default();
 
-        apply_event(&mut state, &TorEvent::Bootstrap(100)).unwrap();
+        TorStateReducer::apply_event(&mut state, &TorEvent::Bootstrap(100)).unwrap();
 
         assert_eq!(state.status, RuntimeStatus::Running);
         assert_eq!(state.bootstrap, 100);
