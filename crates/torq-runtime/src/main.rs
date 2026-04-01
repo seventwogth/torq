@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
+use torq_core::RuntimeStatus;
 use torq_runtime::{TorManager, TorRuntimeConfig};
 
 #[tokio::main]
@@ -24,12 +25,11 @@ async fn main() -> Result<()> {
         }
     });
 
-    manager.start().await?;
-
     println!("torq runtime CLI");
     println!("tor path: {}", options.tor_path.display());
     println!("log path: {}", options.log_path.display());
     println!("commands: start | stop | restart | newnym | state | exit");
+    print_state(manager.current_state());
 
     let stdin = BufReader::new(io::stdin());
     let mut lines = stdin.lines();
@@ -41,15 +41,13 @@ async fn main() -> Result<()> {
             "stop" => manager.stop().await?,
             "restart" => manager.restart().await?,
             "newnym" => manager.new_identity().await?,
-            "state" => println!("[state] {:?}", manager.current_state()),
+            "state" => print_state(manager.current_state()),
             "exit" | "quit" => break,
-            other => {
-                println!("unknown command: {other}");
-            }
+            other => println!("unknown command: {other}"),
         }
     }
 
-    if manager.current_state().is_running {
+    if manager.current_state().status != RuntimeStatus::Stopped {
         let _ = manager.stop().await;
     }
 
@@ -140,4 +138,11 @@ fn print_usage() {
     println!("  cargo run -p torq-runtime -- cmd.exe .\\tor.log -- /C scripts\\mock-tor.cmd");
     println!();
     println!("If omitted, tor-path defaults to TORQ_TOR_EXE or tor.exe.");
+}
+
+fn print_state(state: torq_core::TorState) {
+    println!(
+        "[state] status={:?} bootstrap={}%",
+        state.status, state.bootstrap
+    );
 }

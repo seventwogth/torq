@@ -1,0 +1,39 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Node / frontend artifacts
+node_modules/
+dist/
+.vite/
+.svelte-kit/
+**/node_modules/
+**/dist/
+**/.vite/
+**/.svelte-kit/
+
+# Tauri-generated artifacts
+src-tauri/target/
+src-tauri/gen/
+**/src-tauri/target/
+**/src-tauri/gen/
+
+# Runtime files and logs
+*.log
+*.tmp
+*.pid
+.env*
+
+# Lock files:
+# Keep Cargo.lock tracked for this application workspace.
+*.lock
+!Cargo.lock
+!**/Cargo.lock
+
+# IDE / OS junk
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
