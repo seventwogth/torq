@@ -116,7 +116,7 @@ async fn run_supervisor(
                     break;
                 }
                 SupervisorAction::ProcessExited(wait_result) => {
-                    if let Some(active_session) = session.take() {
+                    if let Some(mut active_session) = session.take() {
                         active_session.logs.stop().await;
                     }
 
@@ -212,7 +212,7 @@ async fn start_session(
     config: &TorRuntimeConfig,
     runtime_event_tx: &mpsc::UnboundedSender<TorEvent>,
 ) -> Result<RuntimeSession> {
-    let logs = LogTail::spawn(
+    let mut logs = LogTail::spawn(
         config.log_path.clone(),
         config.log_poll_interval,
         runtime_event_tx.clone(),
