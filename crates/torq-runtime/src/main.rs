@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    if manager.current_state().status != RuntimeStatus::Stopped {
+    if manager.current_state().status() != RuntimeStatus::Stopped {
         let _ = manager.stop().await;
     }
 
@@ -144,6 +144,7 @@ fn print_usage() {
 fn print_state(state: torq_core::TorState) {
     println!(
         "[state] status={:?} bootstrap={}%",
-        state.status, state.bootstrap
+        state.status(),
+        state.bootstrap()
     );
 }

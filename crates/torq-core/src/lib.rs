@@ -33,8 +33,8 @@ pub enum TorEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TorState {
-    pub status: RuntimeStatus,
-    pub bootstrap: u8,
+    status: RuntimeStatus,
+    bootstrap: u8,
 }
 
 impl Default for TorState {
@@ -44,12 +44,14 @@ impl Default for TorState {
 }
 
 impl TorState {
-    pub fn new(status: RuntimeStatus, bootstrap: u8) -> TorResult<Self> {
-        let state = Self { status, bootstrap };
-        state.validate()?;
-        Ok(state)
-    }
-
+    /// `TorState` mirrors the runtime reducer semantics instead of allowing any
+    /// `(status, bootstrap)` pair to exist publicly.
+    ///
+    /// Invariants:
+    /// - `bootstrap` is always in `0..=100`
+    /// - `Stopped` and `Failed` always reset bootstrap to `0`
+    /// - `Running` always means bootstrap completed (`100`)
+    /// - in-progress bootstrap is represented as `Starting(0..=99)`
     pub const fn stopped() -> Self {
         Self {
             status: RuntimeStatus::Stopped,
@@ -57,51 +59,117 @@ impl TorState {
         }
     }
 
+    pub fn starting(bootstrap: u8) -> TorResult<Self> {
+        Self::try_from_parts(RuntimeStatus::Starting, bootstrap)
+    }
+
+    pub const fn running() -> Self {
+        Self {
+            status: RuntimeStatus::Running,
+            bootstrap: 100,
+        }
+    }
+
+    pub const fn failed() -> Self {
+        Self {
+            status: RuntimeStatus::Failed,
+            bootstrap: 0,
+        }
+    }
+
+    pub const fn status(&self) -> RuntimeStatus {
+        self.status
+    }
+
+    pub const fn bootstrap(&self) -> u8 {
+        self.bootstrap
+    }
+
     pub const fn is_running(&self) -> bool {
+        matches!(self.status, RuntimeStatus::Running)
+    }
+
+    pub const fn is_active(&self) -> bool {
         matches!(
             self.status,
             RuntimeStatus::Starting | RuntimeStatus::Running
         )
     }
 
-    pub fn validate(&self) -> TorResult<()> {
-        if self.bootstrap > 100 {
-            return Err(TorError::InvalidBootstrap(self.bootstrap));
-        }
-
-        if matches!(self.status, RuntimeStatus::Stopped) && self.bootstrap != 0 {
-            return Err(TorError::InvalidRuntimeStatusTransition);
-        }
-
-        Ok(())
-    }
-
-    pub fn set_bootstrap(&mut self, bootstrap: u8) -> TorResult<()> {
+    fn try_from_parts(status: RuntimeStatus, bootstrap: u8) -> TorResult<Self> {
         if bootstrap > 100 {
             return Err(TorError::InvalidBootstrap(bootstrap));
         }
 
-        self.bootstrap = bootstrap;
-        Ok(())
+        if matches!(status, RuntimeStatus::Stopped | RuntimeStatus::Failed) && bootstrap != 0 {
+            return Err(TorError::InvalidRuntimeStatusTransition);
+        }
+
+        if matches!(status, RuntimeStatus::Running) && bootstrap != 100 {
+            return Err(TorError::InvalidRuntimeStatusTransition);
+        }
+
+        if matches!(status, RuntimeStatus::Starting) && bootstrap >= 100 {
+            return Err(TorError::InvalidRuntimeStatusTransition);
+        }
+
+        Ok(Self { status, bootstrap })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeStatus, TorEvent, TorState};
+    use super::{RuntimeStatus, TorError, TorEvent, TorState};
 
     #[test]
-    fn stopped_state_requires_zero_bootstrap() {
-        assert!(TorState::new(RuntimeStatus::Stopped, 0).is_ok());
-        assert!(TorState::new(RuntimeStatus::Stopped, 1).is_err());
+    fn stopped_state_resets_bootstrap() {
+        let state = TorState::stopped();
+
+        assert_eq!(state.status(), RuntimeStatus::Stopped);
+        assert_eq!(state.bootstrap(), 0);
     }
 
     #[test]
-    fn bootstrap_events_can_be_represented_in_state() {
-        let mut state = TorState::new(RuntimeStatus::Starting, 0).unwrap();
-        state.set_bootstrap(42).unwrap();
+    fn starting_state_accepts_in_progress_bootstrap() {
+        let state = TorState::starting(42).unwrap();
 
-        assert_eq!(state.bootstrap, 42);
+        assert_eq!(state.status(), RuntimeStatus::Starting);
+        assert_eq!(state.bootstrap(), 42);
         assert!(matches!(TorEvent::Bootstrap(42), TorEvent::Bootstrap(42)));
+    }
+
+    #[test]
+    fn starting_state_rejects_complete_bootstrap() {
+        assert_eq!(
+            TorState::starting(100).unwrap_err(),
+            TorError::InvalidRuntimeStatusTransition
+        );
+    }
+
+    #[test]
+    fn starting_state_rejects_out_of_range_bootstrap() {
+        assert_eq!(
+            TorState::starting(101).unwrap_err(),
+            TorError::InvalidBootstrap(101)
+        );
+    }
+
+    #[test]
+    fn running_state_implies_completed_bootstrap() {
+        let state = TorState::running();
+
+        assert_eq!(state.status(), RuntimeStatus::Running);
+        assert_eq!(state.bootstrap(), 100);
+        assert!(state.is_running());
+        assert!(state.is_active());
+    }
+
+    #[test]
+    fn failed_state_resets_bootstrap() {
+        let state = TorState::failed();
+
+        assert_eq!(state.status(), RuntimeStatus::Failed);
+        assert_eq!(state.bootstrap(), 0);
+        assert!(!state.is_active());
     }
 }
