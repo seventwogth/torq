@@ -21,7 +21,10 @@ impl TorStateReducer {
                     TorState::starting(*bootstrap)?
                 };
             }
-            TorEvent::Warning(_) | TorEvent::Error(_) | TorEvent::LogLine(_) => {}
+            TorEvent::IdentityRenewed
+            | TorEvent::Warning(_)
+            | TorEvent::Error(_)
+            | TorEvent::LogLine(_) => {}
         }
 
         Ok(())
@@ -114,5 +117,14 @@ mod tests {
 
         assert_eq!(state.status(), RuntimeStatus::Running);
         assert_eq!(state.bootstrap(), 100);
+    }
+
+    #[test]
+    fn identity_renewed_does_not_change_state() {
+        let mut state = TorState::running();
+
+        apply_event(&mut state, &TorEvent::IdentityRenewed).unwrap();
+
+        assert_eq!(state, TorState::running());
     }
 }
