@@ -1,13 +1,17 @@
 use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, mpsc, watch};
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, Duration};
 use torq_core::{TorCommand, TorEvent, TorState};
 
 use crate::config::TorRuntimeConfig;
-use crate::control::TorControlClient;
+use crate::control::{TorBootstrapPhase, TorControlClient, TorControlConfig};
 use crate::logs::LogTail;
 use crate::process::TorProcess;
 use crate::runtime_events::{RuntimeEventSender, RUNTIME_EVENT_QUEUE_CAPACITY};
 use crate::state;
+
+const CONTROL_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub struct TorManager {
     command_tx: mpsc::Sender<TorCommand>,
@@ -21,6 +25,34 @@ struct RuntimeSession {
     // ControlPort stays session-owned so control actions follow the lifetime
     // of the running Tor instance rather than becoming manager-global state.
     control: Option<TorControlClient>,
+    bootstrap_observer: Option<BootstrapObserver>,
+}
+
+struct BootstrapObserver {
+    shutdown_tx: Option<watch::Sender<bool>>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl BootstrapObserver {
+    fn spawn(config: TorControlConfig, event_tx: RuntimeEventSender) -> Self {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_bootstrap_observer(config, event_tx, shutdown_rx));
+
+        Self {
+            shutdown_tx: Some(shutdown_tx),
+            task: Some(task),
+        }
+    }
+
+    async fn stop(&mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(true);
+        }
+
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+    }
 }
 
 impl TorManager {
@@ -123,6 +155,9 @@ async fn run_supervisor(
                 }
                 SupervisorAction::ProcessExited(wait_result) => {
                     if let Some(mut active_session) = session.take() {
+                        if let Some(observer) = active_session.bootstrap_observer.as_mut() {
+                            observer.stop().await;
+                        }
                         active_session.logs.stop().await;
                     }
 
@@ -251,6 +286,10 @@ async fn start_session(
     runtime_event_tx: &RuntimeEventSender,
 ) -> Result<RuntimeSession> {
     let control = config.control.clone().map(TorControlClient::new);
+    let bootstrap_observer = config
+        .control
+        .clone()
+        .map(|control| BootstrapObserver::spawn(control, runtime_event_tx.clone()));
     let mut logs = LogTail::spawn(
         config.log_path.clone(),
         config.log_poll_interval,
@@ -263,8 +302,12 @@ async fn start_session(
             process,
             logs,
             control,
+            bootstrap_observer,
         }),
         Err(error) => {
+            if let Some(mut observer) = bootstrap_observer {
+                observer.stop().await;
+            }
             logs.stop().await;
             Err(error)
         }
@@ -277,6 +320,10 @@ async fn stop_session(
     runtime_event_tx: &RuntimeEventSender,
     emit_stopped: bool,
 ) -> Result<()> {
+    if let Some(observer) = session.bootstrap_observer.as_mut() {
+        observer.stop().await;
+    }
+
     session.process.stop(config.stop_timeout).await?;
     session.logs.stop().await;
 
@@ -334,6 +381,75 @@ async fn emit_event(event_tx: &RuntimeEventSender, event: TorEvent) {
     event_tx.send(event).await;
 }
 
+async fn run_bootstrap_observer(
+    control_config: TorControlConfig,
+    runtime_event_tx: RuntimeEventSender,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    // ControlPort is now the preferred operational bootstrap source when it is
+    // configured. Log-derived bootstrap events still flow through the same
+    // reducer as a fallback/diagnostic channel, so this task only adds
+    // authoritative snapshots and does not replace the log tail entirely yet.
+    let mut client = TorControlClient::new(control_config.clone());
+    let mut last_progress = None;
+    let mut last_warning = None;
+
+    loop {
+        let poll_result = tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    return;
+                }
+                continue;
+            }
+            result = client.get_bootstrap_phase() => result,
+        };
+
+        match poll_result {
+            Ok(phase) => {
+                last_warning = None;
+
+                if let Some(event) = bootstrap_phase_event(last_progress, &phase) {
+                    last_progress = Some(phase.progress());
+                    emit_event(&runtime_event_tx, event).await;
+                }
+
+                if phase.progress() == 100 {
+                    return;
+                }
+            }
+            Err(error) => {
+                let warning =
+                    format!("bootstrap observation via ControlPort is unavailable: {error}");
+
+                if last_warning.as_deref() != Some(warning.as_str()) {
+                    emit_event(&runtime_event_tx, TorEvent::Warning(warning.clone())).await;
+                    last_warning = Some(warning);
+                }
+
+                // A failed poll can leave the underlying TCP session stale.
+                // Rebuild the narrow client on the next iteration instead of
+                // trying to recover with a larger connection manager.
+                client = TorControlClient::new(control_config.clone());
+            }
+        }
+
+        tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    return;
+                }
+            }
+            _ = sleep(CONTROL_BOOTSTRAP_POLL_INTERVAL) => {}
+        }
+    }
+}
+
+fn bootstrap_phase_event(last_progress: Option<u8>, phase: &TorBootstrapPhase) -> Option<TorEvent> {
+    (last_progress.is_none_or(|previous| phase.progress() > previous))
+        .then_some(TorEvent::Bootstrap(phase.progress()))
+}
+
 enum SupervisorAction {
     Command(Option<TorCommand>),
     ProcessExited(std::io::Result<std::process::ExitStatus>),
@@ -351,8 +467,9 @@ mod tests {
     use torq_core::TorEvent;
 
     use super::TorManager;
+    use crate::config::LogMode;
     use crate::config::TorRuntimeConfig;
-    use crate::control::{TorControlAuth, TorControlConfig};
+    use crate::control::{TorBootstrapPhase, TorControlAuth, TorControlConfig};
 
     #[tokio::test]
     async fn new_identity_without_running_tor_emits_warning() {
@@ -411,18 +528,41 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            let mut reader = tokio::io::BufReader::new(socket);
-            let mut line = String::new();
+            let mut tasks = Vec::new();
 
-            reader.read_line(&mut line).await.unwrap();
-            assert_eq!(line.trim_end_matches(['\r', '\n']), "AUTHENTICATE");
-            reader.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                tasks.push(tokio::spawn(async move {
+                    let mut reader = tokio::io::BufReader::new(socket);
+                    let mut line = String::new();
 
-            line.clear();
-            reader.read_line(&mut line).await.unwrap();
-            assert_eq!(line.trim_end_matches(['\r', '\n']), "SIGNAL NEWNYM");
-            reader.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+                    reader.read_line(&mut line).await.unwrap();
+                    assert_eq!(line.trim_end_matches(['\r', '\n']), "AUTHENTICATE");
+                    reader.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+                    line.clear();
+                    reader.read_line(&mut line).await.unwrap();
+                    match line.trim_end_matches(['\r', '\n']) {
+                        "GETINFO status/bootstrap-phase" => {
+                            reader
+                                .get_mut()
+                                .write_all(
+                                    b"250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY=\"Done\"\r\n250 OK\r\n",
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        "SIGNAL NEWNYM" => {
+                            reader.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+                        }
+                        other => panic!("unexpected control command: {other}"),
+                    }
+                }));
+            }
+
+            for task in tasks {
+                task.await.unwrap();
+            }
         });
 
         let script = mock_tor_script_path();
@@ -447,6 +587,130 @@ mod tests {
         assert_eq!(
             recv_matching_event(&mut events, |event| *event == TorEvent::IdentityRenewed).await,
             TorEvent::IdentityRenewed
+        );
+
+        manager.stop().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
+        server.await.unwrap();
+        cleanup(&log_path).await;
+    }
+
+    #[test]
+    fn bootstrap_phase_event_only_emits_forward_progress() {
+        assert_eq!(
+            super::bootstrap_phase_event(
+                None,
+                &TorBootstrapPhase {
+                    progress: 15,
+                    tag: Some("conn".to_string()),
+                    summary: None,
+                }
+            ),
+            Some(TorEvent::Bootstrap(15))
+        );
+        assert_eq!(
+            super::bootstrap_phase_event(
+                Some(15),
+                &TorBootstrapPhase {
+                    progress: 15,
+                    tag: Some("conn".to_string()),
+                    summary: None,
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            super::bootstrap_phase_event(
+                Some(40),
+                &TorBootstrapPhase {
+                    progress: 20,
+                    tag: Some("conn".to_string()),
+                    summary: None,
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            super::bootstrap_phase_event(
+                Some(40),
+                &TorBootstrapPhase {
+                    progress: 41,
+                    tag: Some("conn".to_string()),
+                    summary: None,
+                }
+            ),
+            Some(TorEvent::Bootstrap(41))
+        );
+    }
+
+    #[tokio::test]
+    async fn control_bootstrap_observer_emits_bootstrap_event() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut reader = tokio::io::BufReader::new(socket);
+            let mut line = String::new();
+
+            reader.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end_matches(['\r', '\n']), "AUTHENTICATE");
+            reader.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            assert_eq!(
+                line.trim_end_matches(['\r', '\n']),
+                "GETINFO status/bootstrap-phase"
+            );
+            reader
+                .get_mut()
+                .write_all(
+                    b"250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=25 TAG=starting SUMMARY=\"Starting\"\r\n250 OK\r\n",
+                )
+                .await
+                .unwrap();
+
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+
+                if line.trim_end_matches(['\r', '\n']) == "GETINFO status/bootstrap-phase"
+                    && reader
+                        .get_mut()
+                        .write_all(
+                            b"250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=25 TAG=starting SUMMARY=\"Starting\"\r\n250 OK\r\n",
+                        )
+                        .await
+                        .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        let log_path = unique_test_path("control-bootstrap-observer.log");
+        let control = TorControlConfig::new(
+            address.ip().to_string(),
+            address.port(),
+            TorControlAuth::Null,
+        );
+        let config = TorRuntimeConfig::new("powershell.exe", &log_path)
+            .with_args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .with_log_mode(LogMode::External)
+            .with_control(control)
+            .with_stop_timeout(Duration::from_secs(1));
+        let manager = TorManager::new(config).await.unwrap();
+        let mut events = manager.subscribe_events();
+
+        manager.start().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Started).await;
+
+        assert_eq!(
+            recv_matching_event(&mut events, |event| *event == TorEvent::Bootstrap(25)).await,
+            TorEvent::Bootstrap(25)
         );
 
         manager.stop().await.unwrap();

@@ -8,6 +8,7 @@ pub mod state;
 
 pub use config::{LogMode, TorRuntimeConfig};
 pub use control::{
-    TorControlAuth, TorControlClient, TorControlConfig, TorControlError, TorControlReply,
+    TorBootstrapPhase, TorControlAuth, TorControlClient, TorControlConfig, TorControlError,
+    TorControlReply,
 };
 pub use manager::TorManager;

@@ -5,12 +5,14 @@
 //! - it sends one raw command at a time and waits for the synchronous reply
 //! - it only supports single-line replies (`250 OK`) and same-code continuations
 //!   (`250-...` followed by a final `250 ...`)
-//! - it provides one minimal high-level helper for `SIGNAL NEWNYM`
+//! - it provides minimal high-level helpers for `SIGNAL NEWNYM` and
+//!   `GETINFO status/bootstrap-phase`
 //!
 //! It does not yet implement:
 //! - asynchronous `650` event handling
 //! - `250+` data replies used by richer commands such as `GETINFO`
-//! - broader command-specific control-plane APIs beyond `SIGNAL NEWNYM`
+//! - broader command-specific control-plane APIs beyond the current narrow
+//!   runtime use cases
 
 use std::fmt::Write as _;
 use std::io;
@@ -22,6 +24,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 const SIGNAL_NEWNYM_COMMAND: &str = "SIGNAL NEWNYM";
+const GETINFO_BOOTSTRAP_PHASE_COMMAND: &str = "GETINFO status/bootstrap-phase";
+const BOOTSTRAP_PHASE_REPLY_PREFIX: &str = "status/bootstrap-phase=";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TorControlAuth {
@@ -71,6 +75,27 @@ impl TorControlReply {
 
     fn is_success(&self) -> bool {
         (200..300).contains(&self.code)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TorBootstrapPhase {
+    pub(crate) progress: u8,
+    pub(crate) tag: Option<String>,
+    pub(crate) summary: Option<String>,
+}
+
+impl TorBootstrapPhase {
+    pub fn progress(&self) -> u8 {
+        self.progress
+    }
+
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+
+    pub fn summary(&self) -> Option<&str> {
+        self.summary.as_deref()
     }
 }
 
@@ -189,6 +214,16 @@ impl TorControlClient {
     /// `SIGNAL NEWNYM`, without introducing a broader command framework.
     pub async fn signal_newnym(&mut self) -> Result<TorControlReply, TorControlError> {
         self.send_command(SIGNAL_NEWNYM_COMMAND).await
+    }
+
+    /// Reads Tor bootstrap state from the official control interface.
+    ///
+    /// This stays intentionally narrow: runtime only needs the synchronous
+    /// `status/bootstrap-phase` snapshot for now, so we parse just that reply
+    /// shape instead of introducing a generic `GETINFO` framework.
+    pub async fn get_bootstrap_phase(&mut self) -> Result<TorBootstrapPhase, TorControlError> {
+        let reply = self.send_command(GETINFO_BOOTSTRAP_PHASE_COMMAND).await?;
+        parse_bootstrap_phase_reply(&reply)
     }
 
     async fn send_command_internal(
@@ -383,6 +418,98 @@ fn encode_hex(bytes: &[u8]) -> String {
     encoded
 }
 
+fn parse_bootstrap_phase_reply(
+    reply: &TorControlReply,
+) -> Result<TorBootstrapPhase, TorControlError> {
+    let line = reply
+        .lines()
+        .iter()
+        .find(|line| line.starts_with(BOOTSTRAP_PHASE_REPLY_PREFIX))
+        .ok_or_else(|| TorControlError::MalformedResponse {
+            message: "missing status/bootstrap-phase line in GETINFO reply".to_string(),
+        })?;
+
+    let payload = &line[BOOTSTRAP_PHASE_REPLY_PREFIX.len()..];
+    let mut progress = None;
+    let mut tag = None;
+    let mut summary = None;
+
+    for token in split_control_kv_tokens(payload)? {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+
+        if key.eq_ignore_ascii_case("PROGRESS") {
+            let parsed = value
+                .parse::<u8>()
+                .map_err(|_| TorControlError::MalformedResponse {
+                    message: format!("invalid bootstrap progress value: {value:?}"),
+                })?;
+
+            if parsed > 100 {
+                return Err(TorControlError::MalformedResponse {
+                    message: format!("bootstrap progress out of range: {parsed}"),
+                });
+            }
+
+            progress = Some(parsed);
+        } else if key.eq_ignore_ascii_case("TAG") {
+            tag = Some(value.to_string());
+        } else if key.eq_ignore_ascii_case("SUMMARY") {
+            summary = Some(value.to_string());
+        }
+    }
+
+    let progress = progress.ok_or_else(|| TorControlError::MalformedResponse {
+        message: "missing PROGRESS in status/bootstrap-phase reply".to_string(),
+    })?;
+
+    Ok(TorBootstrapPhase {
+        progress,
+        tag,
+        summary,
+    })
+}
+
+fn split_control_kv_tokens(input: &str) -> Result<Vec<String>, TorControlError> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_quotes = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '\\' => {
+                let escaped = chars
+                    .next()
+                    .ok_or_else(|| TorControlError::MalformedResponse {
+                        message: "dangling escape in control reply".to_string(),
+                    })?;
+                current.push(escaped);
+            }
+            ' ' | '\t' if !in_quotes => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if in_quotes {
+        return Err(TorControlError::MalformedResponse {
+            message: "unterminated quote in control reply".to_string(),
+        });
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    Ok(tokens)
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -391,8 +518,9 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{
-        parse_reply_line, TorControlAuth, TorControlClient, TorControlConfig, TorControlError,
-        TorControlReply, SIGNAL_NEWNYM_COMMAND,
+        parse_bootstrap_phase_reply, parse_reply_line, split_control_kv_tokens, TorBootstrapPhase,
+        TorControlAuth, TorControlClient, TorControlConfig, TorControlError, TorControlReply,
+        GETINFO_BOOTSTRAP_PHASE_COMMAND, SIGNAL_NEWNYM_COMMAND,
     };
 
     #[test]
@@ -449,6 +577,74 @@ mod tests {
         assert_eq!(parsed.text, "config-text");
     }
 
+    #[test]
+    fn parses_bootstrap_phase_reply() {
+        let phase = parse_bootstrap_phase_reply(&TorControlReply {
+            code: 250,
+            lines: vec![
+                "status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=73 TAG=loading_descriptors SUMMARY=\"Loading relay descriptors\"".to_string(),
+                "OK".to_string(),
+            ],
+        })
+        .unwrap();
+
+        assert_eq!(
+            phase,
+            TorBootstrapPhase {
+                progress: 73,
+                tag: Some("loading_descriptors".to_string()),
+                summary: Some("Loading relay descriptors".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_bootstrap_phase_reply_without_progress() {
+        let error = parse_bootstrap_phase_reply(&TorControlReply {
+            code: 250,
+            lines: vec![
+                "status/bootstrap-phase=NOTICE BOOTSTRAP TAG=loading_descriptors".to_string(),
+                "OK".to_string(),
+            ],
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, TorControlError::MalformedResponse { .. }));
+    }
+
+    #[test]
+    fn rejects_bootstrap_phase_reply_with_out_of_range_progress() {
+        let error = parse_bootstrap_phase_reply(&TorControlReply {
+            code: 250,
+            lines: vec![
+                "status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=101".to_string(),
+                "OK".to_string(),
+            ],
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, TorControlError::MalformedResponse { .. }));
+    }
+
+    #[test]
+    fn splits_control_reply_tokens_with_quoted_summary() {
+        let tokens = split_control_kv_tokens(
+            "NOTICE BOOTSTRAP PROGRESS=20 TAG=conn_done SUMMARY=\"Connected to a relay \\\"alpha\\\"\"",
+        )
+        .unwrap();
+
+        assert_eq!(
+            tokens,
+            vec![
+                "NOTICE",
+                "BOOTSTRAP",
+                "PROGRESS=20",
+                "TAG=conn_done",
+                "SUMMARY=Connected to a relay \"alpha\"",
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn signal_newnym_sends_authenticated_command() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -498,6 +694,70 @@ mod tests {
             error,
             TorControlError::CommandFailed { code: 552, .. }
         ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_bootstrap_phase_sends_getinfo_and_parses_reply() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(socket);
+
+            assert_eq!(read_trimmed_line(&mut stream).await, "AUTHENTICATE");
+            stream.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+            assert_eq!(
+                read_trimmed_line(&mut stream).await,
+                GETINFO_BOOTSTRAP_PHASE_COMMAND
+            );
+            stream
+                .get_mut()
+                .write_all(
+                    b"250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=45 TAG=loading_descriptors SUMMARY=\"Loading relay descriptors\"\r\n250 OK\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut client = TorControlClient::new(local_test_config(address));
+        let phase = client.get_bootstrap_phase().await.unwrap();
+
+        assert_eq!(phase.progress(), 45);
+        assert_eq!(phase.tag(), Some("loading_descriptors"));
+        assert_eq!(phase.summary(), Some("Loading relay descriptors"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_bootstrap_phase_rejects_malformed_reply() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(socket);
+
+            assert_eq!(read_trimmed_line(&mut stream).await, "AUTHENTICATE");
+            stream.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+            assert_eq!(
+                read_trimmed_line(&mut stream).await,
+                GETINFO_BOOTSTRAP_PHASE_COMMAND
+            );
+            stream
+                .get_mut()
+                .write_all(
+                    b"250-status/bootstrap-phase=NOTICE BOOTSTRAP TAG=starting\r\n250 OK\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut client = TorControlClient::new(local_test_config(address));
+        let error = client.get_bootstrap_phase().await.unwrap_err();
+
+        assert!(matches!(error, TorControlError::MalformedResponse { .. }));
         server.await.unwrap();
     }
 

@@ -15,6 +15,14 @@ impl TorStateReducer {
                 *state = TorState::failed();
             }
             TorEvent::Bootstrap(bootstrap) => {
+                // Bootstrap is operationally monotonic within a running/starting
+                // session. Ignoring stale lower values lets ControlPort snapshots
+                // become the preferred source without late log lines regressing
+                // state when logs are acting as fallback/diagnostic input.
+                if *bootstrap < state.bootstrap() {
+                    return Ok(());
+                }
+
                 *state = if *bootstrap == 100 {
                     TorState::running()
                 } else {
@@ -86,6 +94,15 @@ mod tests {
 
         assert!(TorStateReducer::apply_event(&mut state, &TorEvent::Bootstrap(101)).is_err());
         assert_eq!(state, TorState::stopped());
+    }
+
+    #[test]
+    fn stale_bootstrap_does_not_regress_state() {
+        let mut state = TorState::running();
+
+        TorStateReducer::apply_event(&mut state, &TorEvent::Bootstrap(45)).unwrap();
+
+        assert_eq!(state, TorState::running());
     }
 
     #[test]
