@@ -23,6 +23,7 @@ pub enum TorCommand {
 pub enum TorEvent {
     Started,
     Stopped,
+    IdentityRenewed,
     StartFailed(String),
     Crashed(String),
     LogLine(String),

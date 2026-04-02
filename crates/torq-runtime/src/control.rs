@@ -5,11 +5,12 @@
 //! - it sends one raw command at a time and waits for the synchronous reply
 //! - it only supports single-line replies (`250 OK`) and same-code continuations
 //!   (`250-...` followed by a final `250 ...`)
+//! - it provides one minimal high-level helper for `SIGNAL NEWNYM`
 //!
 //! It does not yet implement:
 //! - asynchronous `650` event handling
 //! - `250+` data replies used by richer commands such as `GETINFO`
-//! - higher-level control-plane commands like `SIGNAL NEWNYM`
+//! - broader command-specific control-plane APIs beyond `SIGNAL NEWNYM`
 
 use std::fmt::Write as _;
 use std::io;
@@ -19,6 +20,8 @@ use thiserror::Error;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+
+const SIGNAL_NEWNYM_COMMAND: &str = "SIGNAL NEWNYM";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TorControlAuth {
@@ -177,6 +180,15 @@ impl TorControlClient {
         }
 
         self.send_command_internal(command).await
+    }
+
+    /// Requests a new Tor identity over the already configured ControlPort.
+    ///
+    /// This is intentionally a thin wrapper over the raw command foundation:
+    /// it reuses the existing authenticated connection model and sends only
+    /// `SIGNAL NEWNYM`, without introducing a broader command framework.
+    pub async fn signal_newnym(&mut self) -> Result<TorControlReply, TorControlError> {
+        self.send_command(SIGNAL_NEWNYM_COMMAND).await
     }
 
     async fn send_command_internal(
@@ -373,7 +385,15 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_reply_line, TorControlError, TorControlReply};
+    use std::net::SocketAddr;
+
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    use super::{
+        parse_reply_line, TorControlAuth, TorControlClient, TorControlConfig, TorControlError,
+        TorControlReply, SIGNAL_NEWNYM_COMMAND,
+    };
 
     #[test]
     fn parses_single_line_success_reply() {
@@ -427,5 +447,71 @@ mod tests {
         assert_eq!(parsed.code, 250);
         assert_eq!(parsed.separator, '+');
         assert_eq!(parsed.text, "config-text");
+    }
+
+    #[tokio::test]
+    async fn signal_newnym_sends_authenticated_command() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(socket);
+
+            assert_eq!(read_trimmed_line(&mut stream).await, "AUTHENTICATE");
+            stream.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+            assert_eq!(read_trimmed_line(&mut stream).await, SIGNAL_NEWNYM_COMMAND);
+            stream.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+        });
+
+        let mut client = TorControlClient::new(local_test_config(address));
+        let reply = client.signal_newnym().await.unwrap();
+
+        assert_eq!(reply.code(), 250);
+        assert_eq!(reply.message(), "OK");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn signal_newnym_surfaces_tor_command_failure() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(socket);
+
+            assert_eq!(read_trimmed_line(&mut stream).await, "AUTHENTICATE");
+            stream.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+            assert_eq!(read_trimmed_line(&mut stream).await, SIGNAL_NEWNYM_COMMAND);
+            stream
+                .get_mut()
+                .write_all(b"552 Unrecognized signal\r\n")
+                .await
+                .unwrap();
+        });
+
+        let mut client = TorControlClient::new(local_test_config(address));
+        let error = client.signal_newnym().await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            TorControlError::CommandFailed { code: 552, .. }
+        ));
+        server.await.unwrap();
+    }
+
+    fn local_test_config(address: SocketAddr) -> TorControlConfig {
+        TorControlConfig::new(
+            address.ip().to_string(),
+            address.port(),
+            TorControlAuth::Null,
+        )
+    }
+
+    async fn read_trimmed_line(stream: &mut BufReader<tokio::net::TcpStream>) -> String {
+        let mut line = String::new();
+        stream.read_line(&mut line).await.unwrap();
+        line.trim_end_matches(['\r', '\n']).to_string()
     }
 }

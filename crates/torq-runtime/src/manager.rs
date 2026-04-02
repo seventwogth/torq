@@ -1,18 +1,15 @@
-use std::sync::Arc;
-
 use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, mpsc, watch};
 use torq_core::{TorCommand, TorEvent, TorState};
 
 use crate::config::TorRuntimeConfig;
-use crate::control::{TorControlClient, TorControlError};
+use crate::control::TorControlClient;
 use crate::logs::LogTail;
 use crate::process::TorProcess;
 use crate::runtime_events::{RuntimeEventSender, RUNTIME_EVENT_QUEUE_CAPACITY};
 use crate::state;
 
 pub struct TorManager {
-    config: Arc<TorRuntimeConfig>,
     command_tx: mpsc::Sender<TorCommand>,
     state_rx: watch::Receiver<TorState>,
     event_tx: broadcast::Sender<TorEvent>,
@@ -21,11 +18,13 @@ pub struct TorManager {
 struct RuntimeSession {
     process: TorProcess,
     logs: LogTail,
+    // ControlPort stays session-owned so control actions follow the lifetime
+    // of the running Tor instance rather than becoming manager-global state.
+    control: Option<TorControlClient>,
 }
 
 impl TorManager {
     pub async fn new(config: TorRuntimeConfig) -> Result<Self> {
-        let config = Arc::new(config);
         let (command_tx, command_rx) = mpsc::channel(32);
         let (runtime_event_tx, runtime_event_rx) =
             RuntimeEventSender::channel(RUNTIME_EVENT_QUEUE_CAPACITY);
@@ -37,10 +36,9 @@ impl TorManager {
             state_tx,
             event_tx.clone(),
         ));
-        tokio::spawn(run_supervisor(config.clone(), command_rx, runtime_event_tx));
+        tokio::spawn(run_supervisor(config, command_rx, runtime_event_tx));
 
         Ok(Self {
-            config,
             command_tx,
             state_rx,
             event_tx,
@@ -93,20 +91,10 @@ impl TorManager {
     pub async fn new_identity(&self) -> Result<()> {
         self.send(TorCommand::NewIdentity).await
     }
-
-    pub async fn connect_control(&self) -> std::result::Result<TorControlClient, TorControlError> {
-        let Some(control) = self.config.control.clone() else {
-            return Err(TorControlError::MissingConfig);
-        };
-
-        let mut client = TorControlClient::new(control);
-        client.connect().await?;
-        Ok(client)
-    }
 }
 
 async fn run_supervisor(
-    config: Arc<TorRuntimeConfig>,
+    config: TorRuntimeConfig,
     mut command_rx: mpsc::Receiver<TorCommand>,
     runtime_event_tx: RuntimeEventSender,
 ) {
@@ -124,17 +112,12 @@ async fn run_supervisor(
 
             match next_action {
                 SupervisorAction::Command(Some(command)) => {
-                    handle_command(command, config.as_ref(), &mut session, &runtime_event_tx).await;
+                    handle_command(command, &config, &mut session, &runtime_event_tx).await;
                 }
                 SupervisorAction::Command(None) => {
                     if let Some(mut active_session) = session.take() {
-                        let _ = stop_session(
-                            &mut active_session,
-                            config.as_ref(),
-                            &runtime_event_tx,
-                            true,
-                        )
-                        .await;
+                        let _ = stop_session(&mut active_session, &config, &runtime_event_tx, true)
+                            .await;
                     }
                     break;
                 }
@@ -151,7 +134,7 @@ async fn run_supervisor(
                 break;
             };
 
-            handle_command(command, config.as_ref(), &mut session, &runtime_event_tx).await;
+            handle_command(command, &config, &mut session, &runtime_event_tx).await;
         }
     }
 }
@@ -222,12 +205,41 @@ async fn handle_command(
             }
         }
         TorCommand::NewIdentity => {
+            handle_new_identity(session, runtime_event_tx).await;
+        }
+    }
+}
+
+async fn handle_new_identity(
+    session: &mut Option<RuntimeSession>,
+    runtime_event_tx: &RuntimeEventSender,
+) {
+    let Some(active_session) = session.as_mut() else {
+        emit_event(
+            runtime_event_tx,
+            TorEvent::Warning("tor is not running".to_string()),
+        )
+        .await;
+        return;
+    };
+
+    let Some(control) = active_session.control.as_mut() else {
+        emit_event(
+            runtime_event_tx,
+            TorEvent::Warning("new identity requires ControlPort configuration".to_string()),
+        )
+        .await;
+        return;
+    };
+
+    match control.signal_newnym().await {
+        Ok(_) => emit_event(runtime_event_tx, TorEvent::IdentityRenewed).await,
+        Err(error) => {
             emit_event(
                 runtime_event_tx,
-                TorEvent::Warning(
-                    "new identity requested, but ControlPort is not implemented in runtime MVP"
-                        .to_string(),
-                ),
+                TorEvent::Error(format!(
+                    "failed to request new identity via ControlPort: {error}"
+                )),
             )
             .await;
         }
@@ -238,6 +250,7 @@ async fn start_session(
     config: &TorRuntimeConfig,
     runtime_event_tx: &RuntimeEventSender,
 ) -> Result<RuntimeSession> {
+    let control = config.control.clone().map(TorControlClient::new);
     let mut logs = LogTail::spawn(
         config.log_path.clone(),
         config.log_poll_interval,
@@ -246,7 +259,11 @@ async fn start_session(
     .await?;
 
     match TorProcess::spawn(config).await {
-        Ok(process) => Ok(RuntimeSession { process, logs }),
+        Ok(process) => Ok(RuntimeSession {
+            process,
+            logs,
+            control,
+        }),
         Err(error) => {
             logs.stop().await;
             Err(error)
@@ -320,4 +337,166 @@ async fn emit_event(event_tx: &RuntimeEventSender, event: TorEvent) {
 enum SupervisorAction {
     Command(Option<TorCommand>),
     ProcessExited(std::io::Result<std::process::ExitStatus>),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::broadcast;
+    use tokio::time::timeout;
+    use torq_core::TorEvent;
+
+    use super::TorManager;
+    use crate::config::TorRuntimeConfig;
+    use crate::control::{TorControlAuth, TorControlConfig};
+
+    #[tokio::test]
+    async fn new_identity_without_running_tor_emits_warning() {
+        let manager = TorManager::new(TorRuntimeConfig::new(
+            "tor.exe",
+            unique_test_path("idle.log"),
+        ))
+        .await
+        .unwrap();
+        let mut events = manager.subscribe_events();
+
+        manager.new_identity().await.unwrap();
+
+        assert_eq!(
+            recv_matching_event(&mut events, |event| matches!(
+                event,
+                TorEvent::Warning(message) if message == "tor is not running"
+            ))
+            .await,
+            TorEvent::Warning("tor is not running".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn new_identity_without_control_config_emits_warning() {
+        let script = mock_tor_script_path();
+        let log_path = unique_test_path("missing-control.log");
+        let config = TorRuntimeConfig::new("cmd.exe", &log_path)
+            .with_args(["/C", script.to_string_lossy().as_ref()])
+            .with_stop_timeout(Duration::from_secs(1));
+        let manager = TorManager::new(config).await.unwrap();
+        let mut events = manager.subscribe_events();
+
+        manager.start().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Started).await;
+
+        manager.new_identity().await.unwrap();
+
+        assert_eq!(
+            recv_matching_event(&mut events, |event| matches!(
+                event,
+                TorEvent::Warning(message)
+                    if message == "new identity requires ControlPort configuration"
+            ))
+            .await,
+            TorEvent::Warning("new identity requires ControlPort configuration".to_string())
+        );
+
+        manager.stop().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
+        cleanup(&log_path).await;
+    }
+
+    #[tokio::test]
+    async fn new_identity_success_emits_identity_renewed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut reader = tokio::io::BufReader::new(socket);
+            let mut line = String::new();
+
+            reader.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end_matches(['\r', '\n']), "AUTHENTICATE");
+            reader.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end_matches(['\r', '\n']), "SIGNAL NEWNYM");
+            reader.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+        });
+
+        let script = mock_tor_script_path();
+        let log_path = unique_test_path("identity-renewed.log");
+        let control = TorControlConfig::new(
+            address.ip().to_string(),
+            address.port(),
+            TorControlAuth::Null,
+        );
+        let config = TorRuntimeConfig::new("cmd.exe", &log_path)
+            .with_args(["/C", script.to_string_lossy().as_ref()])
+            .with_control(control)
+            .with_stop_timeout(Duration::from_secs(1));
+        let manager = TorManager::new(config).await.unwrap();
+        let mut events = manager.subscribe_events();
+
+        manager.start().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Started).await;
+
+        manager.new_identity().await.unwrap();
+
+        assert_eq!(
+            recv_matching_event(&mut events, |event| *event == TorEvent::IdentityRenewed).await,
+            TorEvent::IdentityRenewed
+        );
+
+        manager.stop().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
+        server.await.unwrap();
+        cleanup(&log_path).await;
+    }
+
+    async fn recv_matching_event<F>(
+        events: &mut broadcast::Receiver<TorEvent>,
+        predicate: F,
+    ) -> TorEvent
+    where
+        F: Fn(&TorEvent) -> bool,
+    {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Ok(event) if predicate(&event) => return event,
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => panic!("event channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("timed out while waiting for matching runtime event")
+    }
+
+    fn mock_tor_script_path() -> PathBuf {
+        workspace_root().join("scripts").join("mock-tor.cmd")
+    }
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .to_path_buf()
+    }
+
+    async fn cleanup(log_path: &Path) {
+        let _ = tokio::fs::remove_file(log_path).await;
+    }
+
+    fn unique_test_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("torq-manager-{label}-{nonce}.log"))
+    }
 }
