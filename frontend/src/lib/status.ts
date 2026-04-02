@@ -20,11 +20,18 @@ export const controlAvailabilityToColor: Record<ControlAvailability, BadgeTone> 
 };
 
 export function formatRuntimeStatus(status: RuntimeStatus) {
-  return status;
+  const labels: Record<RuntimeStatus, string> = {
+    stopped: 'Stopped',
+    starting: 'Starting',
+    running: 'Running',
+    failed: 'Failed',
+  };
+
+  return labels[status];
 }
 
 export function formatBooleanStatus(value: boolean) {
-  return value ? 'Available' : 'Not available';
+  return value ? 'Available' : 'Unavailable';
 }
 
 export function booleanToColor(value: boolean): BadgeTone {
@@ -32,7 +39,13 @@ export function booleanToColor(value: boolean): BadgeTone {
 }
 
 export function formatControlPortValue(port: ControlAvailability) {
-  return port === 'unconfigured' ? 'unconfigured' : 'configured';
+  const labels: Record<ControlAvailability, string> = {
+    unconfigured: 'Not configured',
+    unavailable: 'Configured, unavailable',
+    available: 'Available',
+  };
+
+  return labels[port];
 }
 
 export function formatBootstrapSource(snapshot: TorRuntimeSnapshotDto | null) {

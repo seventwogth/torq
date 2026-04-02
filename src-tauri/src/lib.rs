@@ -18,12 +18,17 @@ const TOR_RUNTIME_ACTIVITY_EVENT: &str = "tor://activity";
 /// instance. That keeps runtime ownership in the backend layer instead of
 /// reconstructing supervisors or control clients per request.
 pub struct AppState {
-    manager: TorManager,
+    manager: Option<TorManager>,
+    init_error: Option<String>,
 }
 
 impl AppState {
-    fn manager(&self) -> &TorManager {
-        &self.manager
+    fn manager(&self) -> Result<&TorManager, String> {
+        self.manager.as_ref().ok_or_else(|| {
+            self.init_error
+                .clone()
+                .unwrap_or_else(|| "desktop backend is unavailable".to_string())
+        })
     }
 }
 
@@ -317,57 +322,57 @@ fn default_runtime_config() -> torq_runtime::TorRuntimeConfig {
     torq_runtime::TorRuntimeConfig::new(tor_path, log_path)
 }
 
-async fn build_state() -> Result<AppState, String> {
-    let manager = TorManager::new(default_runtime_config())
-        .await
-        .map_err(|error| error.to_string())?;
+fn format_backend_init_error(error: &str) -> String {
+    format!("Desktop backend could not initialize. {error}")
+}
 
-    Ok(AppState { manager })
+async fn build_state() -> AppState {
+    match TorManager::new(default_runtime_config()).await {
+        Ok(manager) => AppState {
+            manager: Some(manager),
+            init_error: None,
+        },
+        Err(error) => AppState {
+            manager: None,
+            init_error: Some(format_backend_init_error(&error.to_string())),
+        },
+    }
 }
 
 #[tauri::command]
-fn tor_state(state: State<'_, AppState>) -> TorStateView {
+fn tor_state(state: State<'_, AppState>) -> Result<TorStateView, String> {
     // Frontend commands return DTOs so the shell stays decoupled from the
     // runtime's internal watch channels and invariant-bearing backend types.
-    state.manager().current_state().into()
+    Ok(state.manager()?.current_state().into())
 }
 
 #[tauri::command]
-fn tor_runtime_snapshot(state: State<'_, AppState>) -> TorRuntimeSnapshotView {
-    state.manager().current_runtime_state().into()
+fn tor_runtime_snapshot(state: State<'_, AppState>) -> Result<TorRuntimeSnapshotView, String> {
+    Ok(state.manager()?.current_runtime_state().into())
 }
 
 #[tauri::command]
 async fn tor_start(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .manager()
-        .start()
-        .await
-        .map_err(|error| error.to_string())
+    let manager = state.manager()?;
+    manager.start().await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn tor_stop(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .manager()
-        .stop()
-        .await
-        .map_err(|error| error.to_string())
+    let manager = state.manager()?;
+    manager.stop().await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn tor_restart(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .manager()
-        .restart()
-        .await
-        .map_err(|error| error.to_string())
+    let manager = state.manager()?;
+    manager.restart().await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn tor_new_identity(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .manager()
+    let manager = state.manager()?;
+    manager
         .new_identity()
         .await
         .map_err(|error| error.to_string())
@@ -377,14 +382,16 @@ async fn tor_new_identity(state: State<'_, AppState>) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let state = tauri::async_runtime::block_on(build_state())
-                .expect("failed to initialize tor runtime state");
+            let state = tauri::async_runtime::block_on(build_state());
             let app_handle = app.handle().clone();
             app.manage(state);
             let app_state = app.state::<AppState>();
-            let state_rx = app_state.manager().state_receiver();
-            let runtime_state_rx = app_state.manager().runtime_state_receiver();
-            let mut activity_rx = app_state.manager().subscribe_events();
+            let Some(manager) = app_state.manager.as_ref() else {
+                return Ok(());
+            };
+            let state_rx = manager.state_receiver();
+            let runtime_state_rx = manager.runtime_state_receiver();
+            let mut activity_rx = manager.subscribe_events();
 
             tauri::async_runtime::spawn({
                 let app_handle = app_handle.clone();

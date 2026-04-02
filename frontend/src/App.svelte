@@ -4,10 +4,14 @@
   import Card from './lib/components/Card.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import {
+    formatActionError,
+    formatUiError,
+    humanizeRuntimeMessage,
+  } from './lib/runtime-feedback';
+  import {
     booleanToColor,
     bootstrapSourceToColor,
     controlAvailabilityToColor,
-    formatBooleanStatus,
     formatBootstrapSource,
     formatControlPortValue,
     formatRuntimeStatus,
@@ -82,7 +86,10 @@
         });
       } catch (error) {
         if (active) {
-          eventErrorMessage = formatUiError('Live runtime updates are unavailable.', error);
+          eventErrorMessage = formatUiError(
+            'Live runtime updates are unavailable. One-time state refreshes may still work.',
+            error,
+          );
         }
       }
 
@@ -97,7 +104,10 @@
         );
       } catch (error) {
         if (active) {
-          eventErrorMessage = formatUiError('Live runtime updates are unavailable.', error);
+          eventErrorMessage = formatUiError(
+            'Live runtime updates are unavailable. One-time state refreshes may still work.',
+            error,
+          );
         }
       }
 
@@ -133,7 +143,10 @@
         loadErrorMessage = '';
       } catch (error) {
         if (active) {
-          loadErrorMessage = formatUiError('Unable to load backend state.', error);
+          loadErrorMessage = formatUiError(
+            'Could not read runtime state from the desktop backend.',
+            error,
+          );
           backendConnected = false;
         }
       }
@@ -162,6 +175,19 @@
   $: primaryAction = (isTorActive ? 'stop' : 'start') as ActionName;
   $: primaryActionTone = primaryAction === 'start' ? 'primary' : 'danger';
   $: canRunPrimaryAction = primaryAction === 'start' ? canStart : canStop;
+  $: backendStatusLabel = backendConnected ? 'desktop backend ready' : 'desktop backend unavailable';
+  $: runtimeStateEmptyMessage = loadErrorMessage
+    ? 'Runtime state is unavailable while the desktop backend cannot be read.'
+    : 'Reading runtime state from the desktop backend.';
+  $: runtimeSnapshotEmptyMessage = loadErrorMessage
+    ? 'Runtime snapshot is unavailable while the desktop backend cannot be read.'
+    : 'Reading runtime snapshot from the desktop backend.';
+  $: controlHintMessage = deriveControlHint(snapshot, torState);
+  $: newIdentityHintMessage = canRequestNewIdentity
+    ? ''
+    : deriveNewIdentityHint(snapshot, torState);
+  $: activityEmptyMessage = deriveActivityEmptyMessage(torState, loadErrorMessage);
+  $: controlPortNote = deriveControlPortNote(snapshot, torState);
   $: capabilities = snapshot
     ? [
         {
@@ -200,11 +226,6 @@
       value === 'info'
       ? value
       : 'neutral';
-  }
-
-  function formatUiError(prefix: string, error: unknown) {
-    const message = error instanceof Error ? error.message.trim() : String(error).trim();
-    return message ? `${prefix} ${message}` : prefix;
   }
 
   function humanizeActivityTitle(value: string) {
@@ -295,7 +316,7 @@
     const timestamp =
       parseTimestamp(record.timestamp_ms) ?? parseTimestamp(record.timestamp) ?? Date.now();
     const tone = typeof record.tone === 'string' ? normalizeTone(record.tone) : 'neutral';
-    const details = extractString(record.details) ?? extractString(record.message);
+    const details = (extractString(record.details) ?? extractString(record.message))?.trim();
     const coalesceKey = normalizeCoalesceKey(record.coalesce_key, title, record);
 
     return {
@@ -303,7 +324,7 @@
       timestamp,
       tone,
       title,
-      details,
+      details: details ? humanizeRuntimeMessage(details) : undefined,
       coalesceKey,
     };
   }
@@ -335,7 +356,7 @@
         await requestNewIdentity();
       }
     } catch (error) {
-      actionErrorMessage = formatUiError('Action failed.', error);
+      actionErrorMessage = formatActionError(action, error);
       pendingAction = null;
       return;
     }
@@ -345,7 +366,10 @@
         await refreshRuntimeView();
         loadErrorMessage = '';
       } catch (error) {
-        loadErrorMessage = formatUiError('Unable to refresh backend state.', error);
+        loadErrorMessage = formatUiError(
+          'Could not refresh runtime state from the desktop backend.',
+          error,
+        );
         backendConnected = false;
       }
     }
@@ -370,6 +394,102 @@
 
     return pendingAction === action ? pendingLabels[action] : labels[action];
   }
+
+  function deriveControlHint(
+    snapshot: TorRuntimeSnapshotDto | null,
+    torState: TorStateDto | null,
+  ) {
+    if (!snapshot || !torState) {
+      return 'Reading runtime state from the desktop backend.';
+    }
+
+    if (torState.status === 'failed') {
+      return 'The last Tor start attempt failed. Review the latest error or activity entry before retrying.';
+    }
+
+    if (!isTorActive && !snapshot.control_configured) {
+      return 'Tor is stopped. ControlPort is not configured, so New Identity and control-backed bootstrap updates will stay unavailable.';
+    }
+
+    if (isTorActive && !snapshot.control_configured) {
+      return 'Tor is running without ControlPort configuration. New Identity and control-backed bootstrap updates are unavailable.';
+    }
+
+    if (isTorActive && !snapshot.control_available) {
+      return 'Tor is running, but ControlPort is not reachable. New Identity and control-backed bootstrap updates are unavailable.';
+    }
+
+    if (torState.status === 'starting' && !snapshot.bootstrap_observation_available) {
+      return 'Tor is starting. Bootstrap progress is currently falling back to log-based observation.';
+    }
+
+    return '';
+  }
+
+  function deriveNewIdentityHint(
+    snapshot: TorRuntimeSnapshotDto | null,
+    torState: TorStateDto | null,
+  ) {
+    if (!snapshot || !torState) {
+      return '';
+    }
+
+    if (torState.status !== 'starting' && torState.status !== 'running') {
+      return 'New Identity is unavailable while Tor is stopped.';
+    }
+
+    if (!snapshot.control_configured) {
+      return 'New Identity requires ControlPort configuration.';
+    }
+
+    if (!snapshot.control_available) {
+      return 'New Identity is unavailable because ControlPort is not reachable.';
+    }
+
+    return '';
+  }
+
+  function deriveActivityEmptyMessage(torState: TorStateDto | null, loadErrorMessage: string) {
+    if (loadErrorMessage) {
+      return 'Runtime activity is unavailable while backend state cannot be read.';
+    }
+
+    if (torState?.status === 'failed') {
+      return 'No new runtime events yet. Review the latest start failure before retrying.';
+    }
+
+    if (torState?.status === 'starting' || torState?.status === 'running') {
+      return 'Waiting for the next runtime event.';
+    }
+
+    return 'No runtime events yet. Start Tor to see lifecycle and bootstrap activity.';
+  }
+
+  function deriveControlPortNote(
+    snapshot: TorRuntimeSnapshotDto | null,
+    torState: TorStateDto | null,
+  ) {
+    if (!snapshot) {
+      return '';
+    }
+
+    if (!snapshot.control_configured) {
+      return 'ControlPort is not configured. New Identity and control-backed bootstrap observation stay unavailable.';
+    }
+
+    if (
+      (torState?.status === 'starting' || torState?.status === 'running') &&
+      !snapshot.control_available
+    ) {
+      return 'ControlPort is configured but not currently reachable from the desktop runtime.';
+    }
+
+    if (!snapshot.control_available) {
+      return 'ControlPort is configured. Availability will be checked after Tor starts.';
+    }
+
+    return 'ControlPort is reachable for bootstrap observation and New Identity requests.';
+  }
 </script>
 
 <svelte:head>
@@ -380,16 +500,16 @@
   <header class="hero">
     <div class="hero-main">
       <div class="hero-copy">
-        <p class="eyebrow">Status Panel</p>
+        <p class="eyebrow">Desktop Runtime</p>
         <h1>torq</h1>
         <div class="hero-meta">
           <StatusBadge
-            label={backendConnected ? 'backend connected' : 'backend disconnected'}
+            label={backendStatusLabel}
             tone={backendConnected ? 'success' : 'danger'}
           />
           <p class="hero-text">
-            Read-only runtime overview for Tor process state, ControlPort availability, and current
-            observation capabilities.
+            Desktop runtime control for Tor process state, ControlPort health, and identity
+            actions.
           </p>
         </div>
       </div>
@@ -432,6 +552,14 @@
         </div>
 
         <div class="control-feedback" aria-live="polite">
+          {#if controlHintMessage}
+            <p class="inline-message inline-message-muted">{controlHintMessage}</p>
+          {/if}
+
+          {#if newIdentityHintMessage && newIdentityHintMessage !== controlHintMessage}
+            <p class="inline-message inline-message-muted">{newIdentityHintMessage}</p>
+          {/if}
+
           {#if actionErrorMessage}
             <p class="inline-message inline-message-error">{actionErrorMessage}</p>
           {/if}
@@ -447,7 +575,7 @@
   <section class="status-panel" aria-label="Tor runtime status panel">
     <div class="section-heading">
       <h2>Status Panel</h2>
-      <p>Rendered from the existing `tor_state` and `tor_runtime_snapshot` backend commands.</p>
+      <p>Rendered from the existing `tor_state` and `tor_runtime_snapshot` desktop commands.</p>
     </div>
 
     <div class="card-grid">
@@ -466,9 +594,15 @@
               <span class="metric-label">Bootstrap</span>
               <strong class="metric-value">{torState.bootstrap}%</strong>
             </div>
+
+            {#if torState.status === 'failed'}
+              <p class="supporting-text">
+                The last start attempt failed. Check the latest action error or activity entry.
+              </p>
+            {/if}
           </div>
         {:else}
-          <p class="empty-state">Runtime state is loading.</p>
+          <p class="empty-state">{runtimeStateEmptyMessage}</p>
         {/if}
       </Card>
 
@@ -476,7 +610,7 @@
         {#if snapshot}
           <div class="metric-stack">
             <div class="metric">
-              <span class="metric-label">Port</span>
+              <span class="metric-label">Status</span>
               <StatusBadge
                 label={formatControlPortValue(snapshot.control.port)}
                 tone={controlAvailabilityToColor[snapshot.control.port]}
@@ -484,15 +618,17 @@
             </div>
 
             <div class="metric">
-              <span class="metric-label">Control available</span>
+              <span class="metric-label">Bootstrap observation</span>
               <StatusBadge
-                label={formatBooleanStatus(snapshot.control_available)}
-                tone={booleanToColor(snapshot.control_available)}
+                label={formatControlPortValue(snapshot.control.bootstrap_observation)}
+                tone={controlAvailabilityToColor[snapshot.control.bootstrap_observation]}
               />
             </div>
+
+            <p class="supporting-text">{controlPortNote}</p>
           </div>
         {:else}
-          <p class="empty-state">Runtime snapshot is loading.</p>
+          <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
         {/if}
       </Card>
 
@@ -510,7 +646,7 @@
             {/each}
           </ul>
         {:else}
-          <p class="empty-state">Runtime snapshot is loading.</p>
+          <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
         {/if}
       </Card>
 
@@ -530,14 +666,16 @@
               <span class="supporting-text">
                 {snapshot.uses_control_bootstrap_observation
                   ? 'Using ControlPort bootstrap observation.'
-                  : snapshot.tor.status === 'starting' || snapshot.tor.status === 'running'
-                    ? 'Falling back to log-based runtime observation.'
-                    : 'Bootstrap observation is currently unavailable.'}
+                  : snapshot.control.bootstrap_observation === 'unconfigured'
+                    ? 'ControlPort bootstrap observation is not configured.'
+                    : snapshot.tor.status === 'starting' || snapshot.tor.status === 'running'
+                      ? 'ControlPort bootstrap observation is unavailable, so the desktop shell is falling back to Tor log output.'
+                      : 'Bootstrap observation will appear after Tor starts.'}
               </span>
             </div>
           </div>
         {:else}
-          <p class="empty-state">Runtime snapshot is loading.</p>
+          <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
         {/if}
       </Card>
     </div>
@@ -570,7 +708,7 @@
             {/each}
           </ul>
         {:else}
-          <p class="empty-state activity-empty-state">Activity will appear here.</p>
+          <p class="empty-state activity-empty-state">{activityEmptyMessage}</p>
         {/if}
       </div>
     </Card>
@@ -578,7 +716,7 @@
 
   {#if loadErrorMessage}
     <section class="error-panel" aria-live="polite">
-      <h2>Load error</h2>
+      <h2>Backend state unavailable</h2>
       <p>{loadErrorMessage}</p>
     </section>
   {/if}

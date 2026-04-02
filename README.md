@@ -1,7 +1,38 @@
 # torq
 A control tool for Tor routing, bridge management, and traffic orchestration.
 
-## Runtime MVP
+## Development
+
+The canonical desktop development entrypoint is the repository root.
+
+1. Install frontend dependencies once:
+
+```powershell
+npm run setup
+```
+
+2. Start the desktop app in dev mode from the repository root:
+
+```powershell
+npm run tauri:dev
+```
+
+Root-level scripts:
+
+- `npm run tauri:dev` starts the Tauri desktop app and the Vite dev server.
+- `npm run build` builds the frontend only.
+- `npm run tauri:build` builds the desktop app.
+- `npm run check` runs frontend checks plus `cargo fmt --all --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+
+Useful environment variables:
+
+- `TORQ_TOR_EXE` points the desktop/runtime backend at a Tor binary. If unset, the app tries `tor.exe`.
+- `TORQ_TOR_LOG` overrides the runtime log path. If unset, the app uses `tor.log` in the repo root.
+
+Tauri config lives in [src-tauri/tauri.conf.json](/C:/Users/stargazer/github/torq/src-tauri/tauri.conf.json).
+Frontend sources live in [frontend](/C:/Users/stargazer/github/torq/frontend).
+
+## Runtime CLI smoke test
 
 Run the CLI example from the workspace root:
 
