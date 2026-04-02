@@ -19,16 +19,16 @@
 <style>
   .card {
     border: 1px solid var(--color-border);
-    border-radius: 16px;
+    border-radius: 18px;
     background: var(--color-surface);
-    padding: 18px;
+    padding: 20px;
     display: grid;
-    gap: 16px;
+    gap: 18px;
   }
 
   .card-header {
     display: grid;
-    gap: 6px;
+    gap: 8px;
   }
 
   h2,
@@ -37,9 +37,9 @@
   }
 
   h2 {
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     line-height: 1.2;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--color-text-primary);
   }
@@ -47,11 +47,11 @@
   p {
     color: var(--color-text-secondary);
     font-size: 0.95rem;
-    line-height: 1.4;
+    line-height: 1.5;
   }
 
   .card-body {
     display: grid;
-    gap: 14px;
+    gap: 12px;
   }
 </style>

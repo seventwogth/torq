@@ -44,6 +44,7 @@
   let activitySequence = 0;
 
   const ACTIVITY_HISTORY_LIMIT = 12;
+  const DEFAULT_ACTIVITY_TITLE = 'Runtime event';
 
   type ActionName = 'start' | 'stop' | 'restart' | 'new_identity';
 
@@ -81,7 +82,7 @@
         });
       } catch (error) {
         if (active) {
-          eventErrorMessage = error instanceof Error ? error.message : String(error);
+          eventErrorMessage = formatUiError('Live runtime updates are unavailable.', error);
         }
       }
 
@@ -96,7 +97,7 @@
         );
       } catch (error) {
         if (active) {
-          eventErrorMessage = error instanceof Error ? error.message : String(error);
+          eventErrorMessage = formatUiError('Live runtime updates are unavailable.', error);
         }
       }
 
@@ -113,7 +114,7 @@
         );
       } catch (error) {
         if (active) {
-          activitySubscriptionError = 'Activity feed unavailable.';
+          activitySubscriptionError = 'Activity feed is unavailable.';
         }
       }
 
@@ -132,7 +133,7 @@
         loadErrorMessage = '';
       } catch (error) {
         if (active) {
-          loadErrorMessage = error instanceof Error ? error.message : String(error);
+          loadErrorMessage = formatUiError('Unable to load backend state.', error);
           backendConnected = false;
         }
       }
@@ -201,12 +202,20 @@
       : 'neutral';
   }
 
-  function humanizeKind(kind: string) {
-    return kind
+  function formatUiError(prefix: string, error: unknown) {
+    const message = error instanceof Error ? error.message.trim() : String(error).trim();
+    return message ? `${prefix} ${message}` : prefix;
+  }
+
+  function humanizeActivityTitle(value: string) {
+    const normalized = value
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .replace(/[_-]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-      .replace(/^\w/, (first: string) => first.toUpperCase());
+      .toLowerCase();
+
+    return normalized ? normalized.replace(/^\w/, (first: string) => first.toUpperCase()) : '';
   }
 
   function formatActivityTime(timestamp: number) {
@@ -221,16 +230,18 @@
     return typeof value === 'string' && value.trim() ? value.trim() : undefined;
   }
 
-  function extractNumber(value: unknown) {
-    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-  }
-
   function parseTimestamp(value: unknown) {
     if (typeof value === 'number' && Number.isFinite(value)) {
       return value;
     }
 
     if (typeof value === 'string') {
+      const numeric = Number(value);
+
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+
       const parsed = Date.parse(value);
       return Number.isFinite(parsed) ? parsed : undefined;
     }
@@ -238,117 +249,23 @@
     return undefined;
   }
 
-  function parseActivityTone(kind: string, payload: Record<string, unknown>): ActivityTone {
-    const explicitTone = normalizeTone(payload.tone);
+  function normalizeCoalesceKey(
+    value: unknown,
+    title: string,
+    record: Record<string, unknown>,
+  ): ActivityCoalesceKey | undefined {
+    const explicitKey = extractString(value);
 
-    if (payload.tone) {
-      return explicitTone;
+    if (explicitKey === 'bootstrap') {
+      return explicitKey;
     }
 
-    switch (kind) {
-      case 'started':
-      case 'identityrenewed':
-      case 'controlavailable':
-        return 'success';
-      case 'stopped':
-      case 'bootstrap':
-        return 'warning';
-      case 'startfailed':
-      case 'crashed':
-      case 'error':
-        return 'danger';
-      case 'warning':
-      case 'controlunavailable':
-        return 'warning';
-      default:
-        return 'neutral';
-    }
-  }
+    const looksLikeBootstrap =
+      title.toLowerCase().startsWith('bootstrap') ||
+      typeof record.progress === 'number' ||
+      typeof record.bootstrap === 'number';
 
-  function activityFromKind(kind: string, payload: Record<string, unknown>) {
-    switch (kind) {
-      case 'started':
-        return { title: 'Tor started', tone: 'success' as ActivityTone };
-      case 'stopped':
-        return { title: 'Tor stopped', tone: 'neutral' as ActivityTone };
-      case 'identityrenewed':
-        return { title: 'New identity renewed', tone: 'success' as ActivityTone };
-      case 'startfailed':
-        return {
-          title: 'Tor failed to start',
-          tone: 'danger' as ActivityTone,
-          details: extractString(payload.message) ?? extractString(payload.details),
-        };
-      case 'crashed':
-        return {
-          title: 'Tor crashed',
-          tone: 'danger' as ActivityTone,
-          details: extractString(payload.message) ?? extractString(payload.details),
-        };
-      case 'warning':
-        return {
-          title: 'Runtime warning',
-          tone: 'warning' as ActivityTone,
-          details: extractString(payload.message) ?? extractString(payload.details),
-        };
-      case 'error':
-        return {
-          title: 'Runtime error',
-          tone: 'danger' as ActivityTone,
-          details: extractString(payload.message) ?? extractString(payload.details),
-        };
-      case 'bootstrap': {
-        const progress =
-          extractNumber(payload.bootstrap) ?? extractNumber(payload.progress) ?? undefined;
-
-        return {
-          title: `Bootstrap${typeof progress === 'number' ? `: ${progress}%` : ''}`,
-          tone: progress === 100 ? ('success' as ActivityTone) : ('warning' as ActivityTone),
-          details: extractString(payload.details) ?? extractString(payload.message),
-          coalesceKey: 'bootstrap' as ActivityCoalesceKey,
-        };
-      }
-      case 'controlavailabilitychanged': {
-        const availability = extractString(payload.availability) ?? 'unknown';
-
-        return {
-          title:
-            availability === 'available'
-              ? 'ControlPort became available'
-              : availability === 'unconfigured'
-                ? 'ControlPort unconfigured'
-                : 'ControlPort unavailable',
-          tone:
-            availability === 'available'
-              ? ('success' as ActivityTone)
-              : availability === 'unconfigured'
-                ? ('neutral' as ActivityTone)
-                : ('warning' as ActivityTone),
-          details: availability,
-        };
-      }
-      case 'bootstrapobservationavailabilitychanged': {
-        const availability = extractString(payload.availability) ?? 'unknown';
-
-        return {
-          title:
-            availability === 'available'
-              ? 'Bootstrap observation became available'
-              : availability === 'unconfigured'
-                ? 'Bootstrap observation unconfigured'
-                : 'Bootstrap observation unavailable',
-          tone:
-            availability === 'available'
-              ? ('success' as ActivityTone)
-              : availability === 'unconfigured'
-                ? ('neutral' as ActivityTone)
-                : ('warning' as ActivityTone),
-          details: availability,
-        };
-      }
-      default:
-        return null;
-    }
+    return looksLikeBootstrap ? 'bootstrap' : undefined;
   }
 
   function normalizeActivityEntry(payload: TorActivityEventDto | string | null | undefined) {
@@ -357,11 +274,13 @@
     }
 
     if (typeof payload === 'string') {
+      const title = payload.trim();
+
       return {
         id: nextActivityId(),
         timestamp: Date.now(),
         tone: 'neutral' as ActivityTone,
-        title: payload,
+        title: title || DEFAULT_ACTIVITY_TITLE,
       };
     }
 
@@ -370,22 +289,14 @@
     }
 
     const record = payload as Record<string, unknown>;
-    const rawKind = extractString(record.kind) ?? extractString(record.type) ?? 'unknown';
-    const kind = rawKind.toLowerCase().replace(/[-_\s]+/g, '');
-    const inferred = activityFromKind(kind, record);
-    const title = extractString(record.title) ?? inferred?.title ?? humanizeKind(rawKind);
+    const rawKind = extractString(record.kind) ?? extractString(record.type) ?? '';
+    const title =
+      extractString(record.title) ?? (humanizeActivityTitle(rawKind) || DEFAULT_ACTIVITY_TITLE);
     const timestamp =
       parseTimestamp(record.timestamp_ms) ?? parseTimestamp(record.timestamp) ?? Date.now();
-    const tone =
-      typeof record.tone === 'string'
-        ? normalizeTone(record.tone)
-        : inferred?.tone ?? parseActivityTone(kind, record);
-    const details = extractString(record.details) ?? inferred?.details;
-    const isBootstrapLike =
-      kind === 'bootstrap' ||
-      extractNumber(record.progress) !== undefined ||
-      extractNumber(record.bootstrap) !== undefined ||
-      title.toLowerCase().startsWith('bootstrap');
+    const tone = typeof record.tone === 'string' ? normalizeTone(record.tone) : 'neutral';
+    const details = extractString(record.details) ?? extractString(record.message);
+    const coalesceKey = normalizeCoalesceKey(record.coalesce_key, title, record);
 
     return {
       id: nextActivityId(),
@@ -393,10 +304,7 @@
       tone,
       title,
       details,
-      coalesceKey:
-        extractString(record.coalesce_key) === 'bootstrap'
-          ? 'bootstrap'
-          : inferred?.coalesceKey ?? (isBootstrapLike ? 'bootstrap' : undefined),
+      coalesceKey,
     };
   }
 
@@ -427,7 +335,7 @@
         await requestNewIdentity();
       }
     } catch (error) {
-      actionErrorMessage = error instanceof Error ? error.message : String(error);
+      actionErrorMessage = formatUiError('Action failed.', error);
       pendingAction = null;
       return;
     }
@@ -437,7 +345,7 @@
         await refreshRuntimeView();
         loadErrorMessage = '';
       } catch (error) {
-        loadErrorMessage = error instanceof Error ? error.message : String(error);
+        loadErrorMessage = formatUiError('Unable to refresh backend state.', error);
         backendConnected = false;
       }
     }
@@ -523,13 +431,15 @@
           </div>
         </div>
 
-        {#if actionErrorMessage}
-          <p class="action-error" aria-live="polite">{actionErrorMessage}</p>
-        {/if}
+        <div class="control-feedback" aria-live="polite">
+          {#if actionErrorMessage}
+            <p class="inline-message inline-message-error">{actionErrorMessage}</p>
+          {/if}
 
-        {#if eventErrorMessage}
-          <p class="action-error" aria-live="polite">{eventErrorMessage}</p>
-        {/if}
+          {#if eventErrorMessage}
+            <p class="inline-message inline-message-muted">{eventErrorMessage}</p>
+          {/if}
+        </div>
       </div>
     </div>
   </header>
@@ -558,7 +468,7 @@
             </div>
           </div>
         {:else}
-          <p class="empty-state">Waiting for backend state.</p>
+          <p class="empty-state">Runtime state is loading.</p>
         {/if}
       </Card>
 
@@ -582,7 +492,7 @@
             </div>
           </div>
         {:else}
-          <p class="empty-state">Waiting for runtime snapshot.</p>
+          <p class="empty-state">Runtime snapshot is loading.</p>
         {/if}
       </Card>
 
@@ -600,7 +510,7 @@
             {/each}
           </ul>
         {:else}
-          <p class="empty-state">Waiting for runtime snapshot.</p>
+          <p class="empty-state">Runtime snapshot is loading.</p>
         {/if}
       </Card>
 
@@ -627,7 +537,7 @@
             </div>
           </div>
         {:else}
-          <p class="empty-state">Waiting for runtime snapshot.</p>
+          <p class="empty-state">Runtime snapshot is loading.</p>
         {/if}
       </Card>
     </div>
@@ -636,29 +546,33 @@
   <section class="activity-panel" aria-label="Tor runtime activity">
     <Card title="Activity" subtitle="Recent runtime events.">
       {#if activitySubscriptionError}
-        <p class="activity-note activity-note-error">{activitySubscriptionError}</p>
+        <p class="panel-note panel-note-error">{activitySubscriptionError}</p>
       {/if}
 
-      {#if activityEntries.length}
-        <ul class="activity-list">
-          {#each activityEntries as entry}
-            <li class={`activity-item tone-${entry.tone}`}>
-              <span class="activity-marker" aria-hidden="true"></span>
-              <div class="activity-copy">
-                <div class="activity-headline">
-                  <strong>{entry.title}</strong>
-                  <time>{formatActivityTime(entry.timestamp)}</time>
+      <div class={`activity-feed ${activityEntries.length ? 'has-entries' : 'is-empty'}`}>
+        {#if activityEntries.length}
+          <ul class="activity-list">
+            {#each activityEntries as entry}
+              <li class={`activity-item tone-${entry.tone}`}>
+                <span class="activity-marker" aria-hidden="true"></span>
+                <div class="activity-copy">
+                  <div class="activity-headline">
+                    <strong class="activity-title">{entry.title}</strong>
+                    <time class="activity-time" datetime={new Date(entry.timestamp).toISOString()}>
+                      {formatActivityTime(entry.timestamp)}
+                    </time>
+                  </div>
+                  {#if entry.details}
+                    <p class="activity-details">{entry.details}</p>
+                  {/if}
                 </div>
-                {#if entry.details}
-                  <p>{entry.details}</p>
-                {/if}
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="empty-state">Waiting for runtime activity.</p>
-      {/if}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="empty-state activity-empty-state">Activity will appear here.</p>
+        {/if}
+      </div>
     </Card>
   </section>
 

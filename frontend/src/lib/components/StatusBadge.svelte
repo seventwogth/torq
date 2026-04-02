@@ -13,13 +13,13 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    min-height: 32px;
-    padding: 0 12px;
+    min-height: 30px;
+    padding: 0 11px;
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--tone) 28%, transparent);
-    background: color-mix(in srgb, var(--tone) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--tone) 34%, transparent);
+    background: color-mix(in srgb, var(--tone) 12%, transparent);
     color: var(--tone);
-    font-size: 0.875rem;
+    font-size: 0.84rem;
     font-weight: 600;
     line-height: 1;
     white-space: nowrap;
@@ -46,7 +46,7 @@
   }
 
   .tone-neutral {
-    --tone: var(--color-text-secondary);
+    --tone: var(--color-neutral);
   }
 
   .tone-muted {
