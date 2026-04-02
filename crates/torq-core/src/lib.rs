@@ -119,7 +119,7 @@ impl TorState {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeStatus, TorError, TorEvent, TorState};
+    use super::{RuntimeStatus, TorError, TorState};
 
     #[test]
     fn stopped_state_resets_bootstrap() {
@@ -135,7 +135,6 @@ mod tests {
 
         assert_eq!(state.status(), RuntimeStatus::Starting);
         assert_eq!(state.bootstrap(), 42);
-        assert!(matches!(TorEvent::Bootstrap(42), TorEvent::Bootstrap(42)));
     }
 
     #[test]
