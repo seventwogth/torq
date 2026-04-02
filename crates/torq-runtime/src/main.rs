@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 use torq_core::RuntimeStatus;
-use torq_runtime::{TorManager, TorRuntimeConfig};
+use torq_runtime::{LogMode, TorManager, TorRuntimeConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -14,7 +14,7 @@ async fn main() -> Result<()> {
     let mut config =
         TorRuntimeConfig::new(&options.tor_path, &options.log_path).with_args(options.tor_args);
     config.working_dir = options.working_dir;
-    config.append_log_argument = options.append_log_argument;
+    config.log_mode = options.log_mode;
 
     let manager = TorManager::new(config).await?;
     let mut events = manager.subscribe_events();
@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
     println!("torq runtime CLI");
     println!("tor path: {}", options.tor_path.display());
     println!("log path: {}", options.log_path.display());
+    println!("log mode: {}", options.log_mode.as_str());
     println!("commands: start | stop | restart | newnym | state | exit");
     print_state(manager.current_state());
 
@@ -59,7 +60,7 @@ struct CliOptions {
     log_path: PathBuf,
     tor_args: Vec<String>,
     working_dir: Option<PathBuf>,
-    append_log_argument: bool,
+    log_mode: LogMode,
 }
 
 impl CliOptions {
@@ -74,7 +75,7 @@ impl CliOptions {
         let mut log_path_set = false;
         let mut tor_args = Vec::new();
         let mut working_dir = None;
-        let mut append_log_argument = true;
+        let mut log_mode = LogMode::Managed;
 
         while let Some(argument) = args.next() {
             match argument.as_str() {
@@ -87,7 +88,7 @@ impl CliOptions {
                     working_dir = Some(PathBuf::from(value));
                 }
                 "--no-managed-log" => {
-                    append_log_argument = false;
+                    log_mode = LogMode::External;
                 }
                 "--" => {
                     tor_args.extend(args);
@@ -112,7 +113,7 @@ impl CliOptions {
             log_path,
             tor_args,
             working_dir,
-            append_log_argument,
+            log_mode,
         })
     }
 }
@@ -136,6 +137,8 @@ fn print_usage() {
     println!("  cargo run -p torq-runtime -- cmd.exe .\\tor.log -- /C scripts\\mock-tor.cmd");
     println!();
     println!("If omitted, tor-path defaults to TORQ_TOR_EXE or tor.exe.");
+    println!("Managed mode creates/truncates the log file and passes --Log to tor.");
+    println!("--no-managed-log switches to external mode: torq only tails the path and does not create or truncate it.");
 }
 
 fn print_state(state: torq_core::TorState) {

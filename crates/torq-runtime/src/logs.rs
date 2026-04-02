@@ -1,9 +1,8 @@
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::fs::{self, File, OpenOptions};
+use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
@@ -21,8 +20,6 @@ impl LogTail {
         poll_interval: Duration,
         event_tx: RuntimeEventSender,
     ) -> Result<Self> {
-        prepare_log_file(&log_path).await?;
-
         let task = tokio::spawn(async move {
             if let Err(error) = tail_log_file(log_path, poll_interval, event_tx.clone()).await {
                 event_tx.send(TorEvent::Error(error.to_string())).await;
@@ -38,27 +35,6 @@ impl LogTail {
             let _ = task.await;
         }
     }
-}
-
-pub async fn prepare_log_file(log_path: &Path) -> Result<()> {
-    if let Some(parent) = log_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("failed to create log directory {}", parent.display()))?;
-    }
-
-    OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(log_path)
-        .await
-        .with_context(|| format!("failed to prepare log file {}", log_path.display()))?;
-
-    Ok(())
 }
 
 pub fn parse_bootstrap_percentage(line: &str) -> Option<u8> {
@@ -100,6 +76,9 @@ async fn tail_log_file(
         let metadata = match fs::metadata(&log_path).await {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // The tailer is intentionally read-only. In external mode the log
+                // file belongs to someone else, so we wait for it instead of
+                // creating or repairing it as if torq owned the path.
                 sleep(poll_interval).await;
                 continue;
             }
@@ -151,8 +130,15 @@ async fn drain_pending_lines(pending: &mut Vec<u8>, event_tx: &RuntimeEventSende
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
     use super::{classify_log_line, parse_bootstrap_percentage};
+    use tokio::fs;
+    use tokio::time::sleep;
     use torq_core::TorEvent;
+
+    use crate::runtime_events::RuntimeEventSender;
 
     #[test]
     fn parses_bootstrap_percentage() {
@@ -188,5 +174,30 @@ mod tests {
                 TorEvent::Bootstrap(45),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_does_not_create_missing_log_file() {
+        let missing_path = unique_test_path("external-tail");
+        let _ = fs::remove_file(&missing_path).await;
+
+        let (event_tx, _event_rx) = RuntimeEventSender::channel(4);
+        let mut tail =
+            super::LogTail::spawn(missing_path.clone(), Duration::from_millis(5), event_tx)
+                .await
+                .unwrap();
+
+        sleep(Duration::from_millis(20)).await;
+        assert!(fs::metadata(&missing_path).await.is_err());
+
+        tail.stop().await;
+    }
+
+    fn unique_test_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("torq-{label}-{nonce}.log"))
     }
 }
