@@ -2,20 +2,21 @@ use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
-use torq_core::{TorCommand, TorEvent, TorState};
+use torq_core::{ControlAvailability, TorCommand, TorEvent, TorState};
 
 use crate::config::TorRuntimeConfig;
 use crate::control::{TorBootstrapPhase, TorControlClient, TorControlConfig};
 use crate::logs::LogTail;
 use crate::process::TorProcess;
 use crate::runtime_events::{RuntimeEventSender, RUNTIME_EVENT_QUEUE_CAPACITY};
-use crate::state;
+use crate::runtime_state::{TorRuntimeSnapshot, TorRuntimeSnapshotReducer};
 
 const CONTROL_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub struct TorManager {
     command_tx: mpsc::Sender<TorCommand>,
     state_rx: watch::Receiver<TorState>,
+    runtime_state_rx: watch::Receiver<TorRuntimeSnapshot>,
     event_tx: broadcast::Sender<TorEvent>,
 }
 
@@ -60,12 +61,16 @@ impl TorManager {
         let (command_tx, command_rx) = mpsc::channel(32);
         let (runtime_event_tx, runtime_event_rx) =
             RuntimeEventSender::channel(RUNTIME_EVENT_QUEUE_CAPACITY);
-        let (state_tx, state_rx) = watch::channel(TorState::default());
+        let initial_runtime_state = TorRuntimeSnapshot::new(config.control.is_some());
+        let (state_tx, state_rx) = watch::channel(initial_runtime_state.tor());
+        let (runtime_state_tx, runtime_state_rx) = watch::channel(initial_runtime_state);
         let (event_tx, _) = broadcast::channel(256);
 
         tokio::spawn(run_state_store(
             runtime_event_rx,
             state_tx,
+            runtime_state_tx,
+            initial_runtime_state,
             event_tx.clone(),
         ));
         tokio::spawn(run_supervisor(config, command_rx, runtime_event_tx));
@@ -73,6 +78,7 @@ impl TorManager {
         Ok(Self {
             command_tx,
             state_rx,
+            runtime_state_rx,
             event_tx,
         })
     }
@@ -91,6 +97,18 @@ impl TorManager {
 
     pub fn current_state(&self) -> TorState {
         *self.state_rx.borrow()
+    }
+
+    pub fn runtime_state_receiver(&self) -> watch::Receiver<TorRuntimeSnapshot> {
+        self.runtime_state_rx.clone()
+    }
+
+    pub fn runtime_state(&self) -> watch::Receiver<TorRuntimeSnapshot> {
+        self.runtime_state_rx.clone()
+    }
+
+    pub fn current_runtime_state(&self) -> TorRuntimeSnapshot {
+        *self.runtime_state_rx.borrow()
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<TorEvent> {
@@ -268,8 +286,20 @@ async fn handle_new_identity(
     };
 
     match control.signal_newnym().await {
-        Ok(_) => emit_event(runtime_event_tx, TorEvent::IdentityRenewed).await,
+        Ok(_) => {
+            emit_event(
+                runtime_event_tx,
+                TorEvent::ControlAvailabilityChanged(ControlAvailability::Available),
+            )
+            .await;
+            emit_event(runtime_event_tx, TorEvent::IdentityRenewed).await;
+        }
         Err(error) => {
+            emit_event(
+                runtime_event_tx,
+                TorEvent::ControlAvailabilityChanged(ControlAvailability::Unavailable),
+            )
+            .await;
             emit_event(
                 runtime_event_tx,
                 TorEvent::Error(format!(
@@ -362,15 +392,25 @@ async fn publish_exit_event(
 async fn run_state_store(
     mut runtime_event_rx: mpsc::Receiver<TorEvent>,
     state_tx: watch::Sender<TorState>,
+    runtime_state_tx: watch::Sender<TorRuntimeSnapshot>,
+    initial_runtime_state: TorRuntimeSnapshot,
     event_tx: broadcast::Sender<TorEvent>,
 ) {
-    let mut current_state = TorState::default();
+    let mut current_state = initial_runtime_state;
 
     while let Some(event) = runtime_event_rx.recv().await {
         let mut next_state = current_state;
-        if state::apply_event(&mut next_state, &event).is_ok() && next_state != current_state {
+        if TorRuntimeSnapshotReducer::apply_event(&mut next_state, &event).is_ok()
+            && next_state != current_state
+        {
+            let tor_changed = next_state.tor() != current_state.tor();
             current_state = next_state;
-            let _ = state_tx.send(current_state);
+
+            if tor_changed {
+                let _ = state_tx.send(current_state.tor());
+            }
+
+            let _ = runtime_state_tx.send(current_state);
         }
 
         let _ = event_tx.send(event);
@@ -393,6 +433,8 @@ async fn run_bootstrap_observer(
     let mut client = TorControlClient::new(control_config.clone());
     let mut last_progress = None;
     let mut last_warning = None;
+    let mut last_control_availability = ControlAvailability::Unavailable;
+    let mut last_observer_availability = ControlAvailability::Unavailable;
 
     loop {
         let poll_result = tokio::select! {
@@ -408,6 +450,24 @@ async fn run_bootstrap_observer(
         match poll_result {
             Ok(phase) => {
                 last_warning = None;
+                if last_control_availability != ControlAvailability::Available {
+                    emit_event(
+                        &runtime_event_tx,
+                        TorEvent::ControlAvailabilityChanged(ControlAvailability::Available),
+                    )
+                    .await;
+                    last_control_availability = ControlAvailability::Available;
+                }
+                if last_observer_availability != ControlAvailability::Available {
+                    emit_event(
+                        &runtime_event_tx,
+                        TorEvent::BootstrapObservationAvailabilityChanged(
+                            ControlAvailability::Available,
+                        ),
+                    )
+                    .await;
+                    last_observer_availability = ControlAvailability::Available;
+                }
 
                 if let Some(event) = bootstrap_phase_event(last_progress, &phase) {
                     last_progress = Some(phase.progress());
@@ -422,6 +482,24 @@ async fn run_bootstrap_observer(
                 let warning =
                     format!("bootstrap observation via ControlPort is unavailable: {error}");
 
+                if last_control_availability != ControlAvailability::Unavailable {
+                    emit_event(
+                        &runtime_event_tx,
+                        TorEvent::ControlAvailabilityChanged(ControlAvailability::Unavailable),
+                    )
+                    .await;
+                    last_control_availability = ControlAvailability::Unavailable;
+                }
+                if last_observer_availability != ControlAvailability::Unavailable {
+                    emit_event(
+                        &runtime_event_tx,
+                        TorEvent::BootstrapObservationAvailabilityChanged(
+                            ControlAvailability::Unavailable,
+                        ),
+                    )
+                    .await;
+                    last_observer_availability = ControlAvailability::Unavailable;
+                }
                 if last_warning.as_deref() != Some(warning.as_str()) {
                     emit_event(&runtime_event_tx, TorEvent::Warning(warning.clone())).await;
                     last_warning = Some(warning);
@@ -464,12 +542,35 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::broadcast;
     use tokio::time::timeout;
-    use torq_core::TorEvent;
+    use torq_core::{ControlAvailability, TorEvent};
 
     use super::TorManager;
     use crate::config::LogMode;
     use crate::config::TorRuntimeConfig;
     use crate::control::{TorBootstrapPhase, TorControlAuth, TorControlConfig};
+
+    #[tokio::test]
+    async fn runtime_state_defaults_to_unconfigured_control_without_config() {
+        let manager = TorManager::new(TorRuntimeConfig::new(
+            "tor.exe",
+            unique_test_path("idle-runtime-state.log"),
+        ))
+        .await
+        .unwrap();
+
+        let runtime_state = manager.current_runtime_state();
+        assert_eq!(
+            runtime_state.control().port(),
+            ControlAvailability::Unconfigured
+        );
+        assert_eq!(
+            runtime_state.control().bootstrap_observation(),
+            ControlAvailability::Unconfigured
+        );
+        assert!(!runtime_state.control_configured());
+        assert!(!runtime_state.new_identity_available());
+        assert!(!runtime_state.uses_control_bootstrap_observation());
+    }
 
     #[tokio::test]
     async fn new_identity_without_running_tor_emits_warning() {
@@ -517,6 +618,11 @@ mod tests {
             .await,
             TorEvent::Warning("new identity requires ControlPort configuration".to_string())
         );
+        assert_eq!(
+            manager.current_runtime_state().control().port(),
+            ControlAvailability::Unconfigured
+        );
+        assert!(!manager.current_runtime_state().new_identity_available());
 
         manager.stop().await.unwrap();
         let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
@@ -588,6 +694,11 @@ mod tests {
             recv_matching_event(&mut events, |event| *event == TorEvent::IdentityRenewed).await,
             TorEvent::IdentityRenewed
         );
+        assert_eq!(
+            manager.current_runtime_state().control().port(),
+            ControlAvailability::Available
+        );
+        assert!(manager.current_runtime_state().new_identity_available());
 
         manager.stop().await.unwrap();
         let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
@@ -712,6 +823,161 @@ mod tests {
             recv_matching_event(&mut events, |event| *event == TorEvent::Bootstrap(25)).await,
             TorEvent::Bootstrap(25)
         );
+        assert_eq!(
+            manager.current_runtime_state().control().port(),
+            ControlAvailability::Available
+        );
+        assert_eq!(
+            manager
+                .current_runtime_state()
+                .control()
+                .bootstrap_observation(),
+            ControlAvailability::Available
+        );
+        assert!(manager
+            .current_runtime_state()
+            .uses_control_bootstrap_observation());
+
+        manager.stop().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
+        server.await.unwrap();
+        cleanup(&log_path).await;
+    }
+
+    #[tokio::test]
+    async fn bootstrap_observer_failure_marks_control_unavailable() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let log_path = unique_test_path("control-bootstrap-unavailable.log");
+        let control = TorControlConfig::new(
+            address.ip().to_string(),
+            address.port(),
+            TorControlAuth::Null,
+        );
+        let config = TorRuntimeConfig::new("powershell.exe", &log_path)
+            .with_args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .with_log_mode(LogMode::External)
+            .with_control(control)
+            .with_stop_timeout(Duration::from_secs(1));
+        let manager = TorManager::new(config).await.unwrap();
+        let mut events = manager.subscribe_events();
+
+        manager.start().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Started).await;
+        let _ = recv_matching_event(&mut events, |event| {
+            matches!(
+                event,
+                TorEvent::Warning(message)
+                    if message.starts_with("bootstrap observation via ControlPort is unavailable:")
+            )
+        })
+        .await;
+
+        assert_eq!(
+            manager.current_runtime_state().control().port(),
+            ControlAvailability::Unavailable
+        );
+        assert_eq!(
+            manager
+                .current_runtime_state()
+                .control()
+                .bootstrap_observation(),
+            ControlAvailability::Unavailable
+        );
+        assert!(!manager.current_runtime_state().new_identity_available());
+        assert!(!manager
+            .current_runtime_state()
+            .uses_control_bootstrap_observation());
+
+        manager.stop().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
+        cleanup(&log_path).await;
+    }
+
+    #[tokio::test]
+    async fn new_identity_failure_marks_control_unavailable() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (observer_socket, _) = listener.accept().await.unwrap();
+            let mut observer = tokio::io::BufReader::new(observer_socket);
+            let mut line = String::new();
+
+            observer.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end_matches(['\r', '\n']), "AUTHENTICATE");
+            observer.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+            line.clear();
+            observer.read_line(&mut line).await.unwrap();
+            assert_eq!(
+                line.trim_end_matches(['\r', '\n']),
+                "GETINFO status/bootstrap-phase"
+            );
+            observer
+                .get_mut()
+                .write_all(
+                    b"250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=25 TAG=starting SUMMARY=\"Starting\"\r\n250 OK\r\n",
+                )
+                .await
+                .unwrap();
+
+            let (action_socket, _) = listener.accept().await.unwrap();
+            let mut action = tokio::io::BufReader::new(action_socket);
+
+            line.clear();
+            action.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end_matches(['\r', '\n']), "AUTHENTICATE");
+            action.get_mut().write_all(b"250 OK\r\n").await.unwrap();
+
+            line.clear();
+            action.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end_matches(['\r', '\n']), "SIGNAL NEWNYM");
+            action
+                .get_mut()
+                .write_all(b"552 Unrecognized signal\r\n")
+                .await
+                .unwrap();
+        });
+
+        let log_path = unique_test_path("newnym-control-unavailable.log");
+        let control = TorControlConfig::new(
+            address.ip().to_string(),
+            address.port(),
+            TorControlAuth::Null,
+        );
+        let config = TorRuntimeConfig::new("powershell.exe", &log_path)
+            .with_args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .with_log_mode(LogMode::External)
+            .with_control(control)
+            .with_stop_timeout(Duration::from_secs(1));
+        let manager = TorManager::new(config).await.unwrap();
+        let mut events = manager.subscribe_events();
+
+        manager.start().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Started).await;
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Bootstrap(25)).await;
+        assert_eq!(
+            manager.current_runtime_state().control().port(),
+            ControlAvailability::Available
+        );
+
+        manager.new_identity().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| {
+            matches!(
+                event,
+                TorEvent::Error(message)
+                    if message.starts_with("failed to request new identity via ControlPort:")
+            )
+        })
+        .await;
+
+        assert_eq!(
+            manager.current_runtime_state().control().port(),
+            ControlAvailability::Unavailable
+        );
+        assert!(!manager.current_runtime_state().new_identity_available());
 
         manager.stop().await.unwrap();
         let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;

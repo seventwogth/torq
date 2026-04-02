@@ -11,6 +11,29 @@ pub enum RuntimeStatus {
     Failed,
 }
 
+/// Narrow operational availability for a control-backed capability.
+///
+/// This deliberately avoids a low-level connected/disconnected FSM. Runtime
+/// only needs to answer whether a feature is configured, currently usable, or
+/// known to be unavailable for the current session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ControlAvailability {
+    #[default]
+    Unconfigured,
+    Unavailable,
+    Available,
+}
+
+impl ControlAvailability {
+    pub const fn is_configured(self) -> bool {
+        !matches!(self, Self::Unconfigured)
+    }
+
+    pub const fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TorCommand {
     Start,
@@ -28,6 +51,8 @@ pub enum TorEvent {
     Crashed(String),
     LogLine(String),
     Bootstrap(u8),
+    ControlAvailabilityChanged(ControlAvailability),
+    BootstrapObservationAvailabilityChanged(ControlAvailability),
     Warning(String),
     Error(String),
 }
