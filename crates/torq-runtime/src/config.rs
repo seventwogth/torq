@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::control::TorControlConfig;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogMode {
     // Runtime owns the log destination: it wires tor to this path and may
@@ -32,6 +34,7 @@ pub struct TorRuntimeConfig {
     pub log_mode: LogMode,
     pub args: Vec<OsString>,
     pub working_dir: Option<PathBuf>,
+    pub control: Option<TorControlConfig>,
     pub stop_timeout: Duration,
     pub log_poll_interval: Duration,
 }
@@ -44,6 +47,7 @@ impl TorRuntimeConfig {
             log_mode: LogMode::Managed,
             args: Vec::new(),
             working_dir: None,
+            control: None,
             stop_timeout: Duration::from_secs(5),
             log_poll_interval: Duration::from_millis(250),
         }
@@ -71,6 +75,11 @@ impl TorRuntimeConfig {
 
     pub fn with_working_dir(mut self, working_dir: impl Into<PathBuf>) -> Self {
         self.working_dir = Some(working_dir.into());
+        self
+    }
+
+    pub fn with_control(mut self, control: TorControlConfig) -> Self {
+        self.control = Some(control);
         self
     }
 
