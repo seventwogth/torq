@@ -30,6 +30,8 @@ impl TorStateReducer {
                 };
             }
             TorEvent::IdentityRenewed
+            | TorEvent::ControlAvailabilityChanged(_)
+            | TorEvent::BootstrapObservationAvailabilityChanged(_)
             | TorEvent::Warning(_)
             | TorEvent::Error(_)
             | TorEvent::LogLine(_) => {}
@@ -141,6 +143,26 @@ mod tests {
         let mut state = TorState::running();
 
         apply_event(&mut state, &TorEvent::IdentityRenewed).unwrap();
+
+        assert_eq!(state, TorState::running());
+    }
+
+    #[test]
+    fn control_availability_events_do_not_change_tor_state() {
+        let mut state = TorState::running();
+
+        apply_event(
+            &mut state,
+            &TorEvent::ControlAvailabilityChanged(torq_core::ControlAvailability::Available),
+        )
+        .unwrap();
+        apply_event(
+            &mut state,
+            &TorEvent::BootstrapObservationAvailabilityChanged(
+                torq_core::ControlAvailability::Unavailable,
+            ),
+        )
+        .unwrap();
 
         assert_eq!(state, TorState::running());
     }
