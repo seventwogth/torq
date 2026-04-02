@@ -148,6 +148,42 @@ fn tor_runtime_snapshot(state: State<'_, AppState>) -> TorRuntimeSnapshotView {
     state.manager().current_runtime_state().into()
 }
 
+#[tauri::command]
+async fn tor_start(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .manager()
+        .start()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn tor_stop(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .manager()
+        .stop()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn tor_restart(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .manager()
+        .restart()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn tor_new_identity(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .manager()
+        .new_identity()
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -157,7 +193,14 @@ pub fn run() {
             app.manage(state);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![tor_state, tor_runtime_snapshot])
+        .invoke_handler(tauri::generate_handler![
+            tor_state,
+            tor_runtime_snapshot,
+            tor_start,
+            tor_stop,
+            tor_restart,
+            tor_new_identity
+        ])
         .run(tauri::generate_context!())
         .expect("error while running torq desktop application");
 }

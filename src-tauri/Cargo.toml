@@ -7,12 +7,12 @@ default-run = "torq-desktop"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "2" }
+tauri = { version = "2", features = [] }
 torq-core = { path = "../crates/torq-core" }
 torq-runtime = { path = "../crates/torq-runtime" }
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", features = [] }
 
 [lib]
 name = "torq_desktop"
