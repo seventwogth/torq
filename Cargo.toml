@@ -2,6 +2,7 @@
 members = [
     "crates/torq-core",
     "crates/torq-runtime",
+    "src-tauri",
 ]
 resolver = "2"
 
