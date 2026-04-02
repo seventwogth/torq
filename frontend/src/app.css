@@ -56,16 +56,22 @@ a {
 }
 
 .hero {
+  display: grid;
+  gap: 18px;
+  padding-bottom: 4px;
+}
+
+.hero-main {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
-  padding-bottom: 4px;
+  gap: 28px;
 }
 
 .hero-copy {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 h1,
@@ -94,6 +100,37 @@ h1 {
   color: var(--color-text-secondary);
   font-size: 1rem;
   line-height: 1.55;
+}
+
+.hero-meta {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.control-bar-wrap {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+  min-width: max-content;
+}
+
+.control-bar {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.primary-actions,
+.secondary-actions {
+  display: flex;
+  align-items: center;
+}
+
+.secondary-actions {
+  gap: 10px;
 }
 
 .status-panel {
@@ -193,24 +230,13 @@ h1 {
   word-break: break-word;
 }
 
-.actions-panel {
-  display: grid;
-  gap: 14px;
-}
-
-.actions-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
 .action-button {
-  min-height: 44px;
+  min-height: 42px;
   border-radius: 12px;
   border: 1px solid var(--color-border);
   background: rgba(255, 255, 255, 0.02);
   color: var(--color-text-primary);
-  padding: 0 14px;
+  padding: 0 15px;
   font: inherit;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -232,14 +258,42 @@ h1 {
   cursor: not-allowed;
 }
 
-.action-button.primary {
-  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
-  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+.action-button.action-button-primary {
+  min-height: 48px;
+  min-width: 116px;
+  padding: 0 18px;
+  font-weight: 700;
 }
 
-.action-button.danger {
-  border-color: color-mix(in srgb, var(--color-danger) 38%, var(--color-border));
+.action-button.action-button-primary.primary {
+  border-color: color-mix(in srgb, var(--color-primary) 58%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-surface));
+}
+
+.action-button.action-button-primary.primary:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-primary) 78%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 24%, var(--color-surface));
+}
+
+.action-button.action-button-primary.danger {
+  border-color: color-mix(in srgb, var(--color-danger) 50%, var(--color-border));
   background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+  color: #ffd7d7;
+}
+
+.action-button.action-button-primary.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-danger) 70%, var(--color-border));
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface));
+}
+
+.action-button.action-button-secondary {
+  min-width: 120px;
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.action-button.action-button-secondary:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-text-secondary) 48%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface));
 }
 
 .action-button[aria-busy='true'] {
@@ -263,6 +317,9 @@ h1 {
 .action-error {
   color: #ffb0b0;
   line-height: 1.5;
+  justify-self: end;
+  max-width: 420px;
+  text-align: right;
 }
 
 @media (max-width: 640px) {
@@ -271,7 +328,7 @@ h1 {
     gap: 22px;
   }
 
-  .hero {
+  .hero-main {
     flex-direction: column;
     align-items: stretch;
   }
@@ -292,8 +349,37 @@ h1 {
     max-width: none;
   }
 
-  .actions-grid {
-    grid-template-columns: 1fr;
+  .control-bar-wrap {
+    justify-items: stretch;
+    min-width: 0;
+  }
+
+  .control-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .primary-actions,
+  .secondary-actions {
+    width: 100%;
+  }
+
+  .secondary-actions {
+    flex-direction: column;
+  }
+
+  .action-button,
+  .action-button.action-button-primary,
+  .action-button.action-button-secondary {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .action-error {
+    justify-self: start;
+    max-width: none;
+    text-align: left;
   }
 }
 

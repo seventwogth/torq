@@ -60,6 +60,9 @@
   $: canStop = isTorActive;
   $: canRestart = isTorActive;
   $: canRequestNewIdentity = hasRuntimeData && snapshot?.new_identity_available === true;
+  $: primaryAction = (isTorActive ? 'stop' : 'start') as ActionName;
+  $: primaryActionTone = primaryAction === 'start' ? 'primary' : 'danger';
+  $: canRunPrimaryAction = primaryAction === 'start' ? canStart : canStop;
   $: capabilities = snapshot
     ? [
         {
@@ -145,19 +148,64 @@
 
 <main class="shell">
   <header class="hero">
-    <div class="hero-copy">
-      <p class="eyebrow">Status Panel</p>
-      <h1>torq</h1>
-      <p class="hero-text">
-        Read-only runtime overview for Tor process state, ControlPort availability, and current
-        observation capabilities.
-      </p>
-    </div>
+    <div class="hero-main">
+      <div class="hero-copy">
+        <p class="eyebrow">Status Panel</p>
+        <h1>torq</h1>
+        <div class="hero-meta">
+          <StatusBadge
+            label={backendConnected ? 'backend connected' : 'backend disconnected'}
+            tone={backendConnected ? 'success' : 'danger'}
+          />
+          <p class="hero-text">
+            Read-only runtime overview for Tor process state, ControlPort availability, and current
+            observation capabilities.
+          </p>
+        </div>
+      </div>
 
-    <StatusBadge
-      label={backendConnected ? 'backend connected' : 'backend disconnected'}
-      tone={backendConnected ? 'success' : 'danger'}
-    />
+      <div class="control-bar-wrap">
+        <div class="control-bar" aria-label="Runtime controls">
+          <div class="primary-actions">
+            <button
+              type="button"
+              class={`action-button action-button-primary ${primaryActionTone}`}
+              disabled={!canRunPrimaryAction || pendingAction !== null}
+              aria-busy={pendingAction === primaryAction}
+              on:click={() => performAction(primaryAction)}
+            >
+              {actionLabel(primaryAction)}
+            </button>
+          </div>
+
+          <div class="secondary-actions">
+            <button
+              type="button"
+              class="action-button action-button-secondary"
+              disabled={!canRestart || pendingAction !== null}
+              aria-busy={pendingAction === 'restart'}
+              on:click={() => performAction('restart')}
+            >
+              {actionLabel('restart')}
+            </button>
+
+            <button
+              type="button"
+              class="action-button action-button-secondary"
+              disabled={!canRequestNewIdentity || pendingAction !== null}
+              aria-busy={pendingAction === 'new_identity'}
+              on:click={() => performAction('new_identity')}
+            >
+              {actionLabel('new_identity')}
+            </button>
+          </div>
+        </div>
+
+        {#if actionErrorMessage}
+          <p class="action-error" aria-live="polite">{actionErrorMessage}</p>
+        {/if}
+      </div>
+    </div>
   </header>
 
   <section class="status-panel" aria-label="Tor runtime status panel">
@@ -255,56 +303,6 @@
         {:else}
           <p class="empty-state">Waiting for runtime snapshot.</p>
         {/if}
-      </Card>
-
-      <Card title="Actions" subtitle="Runtime controls wired through the existing backend commands.">
-        <div class="actions-panel">
-          {#if actionErrorMessage}
-            <p class="action-error">{actionErrorMessage}</p>
-          {/if}
-
-          <div class="actions-grid">
-            <button
-              type="button"
-              class="action-button primary"
-              disabled={!canStart || pendingAction !== null}
-              aria-busy={pendingAction === 'start'}
-              on:click={() => performAction('start')}
-            >
-              {actionLabel('start')}
-            </button>
-
-            <button
-              type="button"
-              class="action-button danger"
-              disabled={!canStop || pendingAction !== null}
-              aria-busy={pendingAction === 'stop'}
-              on:click={() => performAction('stop')}
-            >
-              {actionLabel('stop')}
-            </button>
-
-            <button
-              type="button"
-              class="action-button primary"
-              disabled={!canRestart || pendingAction !== null}
-              aria-busy={pendingAction === 'restart'}
-              on:click={() => performAction('restart')}
-            >
-              {actionLabel('restart')}
-            </button>
-
-            <button
-              type="button"
-              class="action-button primary"
-              disabled={!canRequestNewIdentity || pendingAction !== null}
-              aria-busy={pendingAction === 'new_identity'}
-              on:click={() => performAction('new_identity')}
-            >
-              {actionLabel('new_identity')}
-            </button>
-          </div>
-        </div>
       </Card>
     </div>
   </section>
