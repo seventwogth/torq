@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import Card from './lib/components/Card.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import {
@@ -17,8 +18,13 @@
     fetchTorState,
     restartTor,
     requestNewIdentity,
+    TOR_ACTIVITY_EVENT,
+    TOR_RUNTIME_SNAPSHOT_EVENT,
+    TOR_STATE_EVENT,
     startTor,
     stopTor,
+    type ActivityTone,
+    type TorActivityEventDto,
     type TorRuntimeSnapshotDto,
     type TorStateDto,
   } from './lib/torq-api';
@@ -28,9 +34,30 @@
   let snapshot: TorRuntimeSnapshotDto | null = null;
   let loadErrorMessage = '';
   let actionErrorMessage = '';
+  let eventErrorMessage = '';
+  let activitySubscriptionError = '';
   let pendingAction: ActionName | null = null;
+  let unsubscribeStateEvent: UnlistenFn | null = null;
+  let unsubscribeSnapshotEvent: UnlistenFn | null = null;
+  let unsubscribeActivityEvent: UnlistenFn | null = null;
+  let activityEntries: ActivityEntry[] = [];
+  let activitySequence = 0;
+
+  const ACTIVITY_HISTORY_LIMIT = 12;
+  const DEFAULT_ACTIVITY_TITLE = 'Runtime event';
 
   type ActionName = 'start' | 'stop' | 'restart' | 'new_identity';
+
+  type ActivityCoalesceKey = 'bootstrap';
+
+  interface ActivityEntry {
+    id: string;
+    timestamp: number;
+    tone: ActivityTone;
+    title: string;
+    details?: string;
+    coalesceKey?: ActivityCoalesceKey;
+  }
 
   async function refreshRuntimeView() {
     const [nextState, nextSnapshot] = await Promise.all([
@@ -43,14 +70,86 @@
     backendConnected = true;
   }
 
-  onMount(async () => {
-    try {
-      await refreshRuntimeView();
-      loadErrorMessage = '';
-    } catch (error) {
-      loadErrorMessage = error instanceof Error ? error.message : String(error);
-      backendConnected = false;
-    }
+  onMount(() => {
+    let active = true;
+
+    const initializeRuntimeView = async () => {
+      try {
+        unsubscribeStateEvent = await listen<TorStateDto>(TOR_STATE_EVENT, (event) => {
+          state = event.payload;
+          backendConnected = true;
+          loadErrorMessage = '';
+        });
+      } catch (error) {
+        if (active) {
+          eventErrorMessage = formatUiError('Live runtime updates are unavailable.', error);
+        }
+      }
+
+      try {
+        unsubscribeSnapshotEvent = await listen<TorRuntimeSnapshotDto>(
+          TOR_RUNTIME_SNAPSHOT_EVENT,
+          (event) => {
+            snapshot = event.payload;
+            backendConnected = true;
+            loadErrorMessage = '';
+          },
+        );
+      } catch (error) {
+        if (active) {
+          eventErrorMessage = formatUiError('Live runtime updates are unavailable.', error);
+        }
+      }
+
+      try {
+        unsubscribeActivityEvent = await listen<TorActivityEventDto>(
+          TOR_ACTIVITY_EVENT,
+          (event) => {
+            const activityEntry = normalizeActivityEntry(event.payload);
+
+            if (activityEntry) {
+              appendActivityEntry(activityEntry);
+            }
+          },
+        );
+      } catch (error) {
+        if (active) {
+          activitySubscriptionError = 'Activity feed is unavailable.';
+        }
+      }
+
+      if (!active) {
+        unsubscribeStateEvent?.();
+        unsubscribeSnapshotEvent?.();
+        unsubscribeActivityEvent?.();
+        unsubscribeStateEvent = null;
+        unsubscribeSnapshotEvent = null;
+        unsubscribeActivityEvent = null;
+        return;
+      }
+
+      try {
+        await refreshRuntimeView();
+        loadErrorMessage = '';
+      } catch (error) {
+        if (active) {
+          loadErrorMessage = formatUiError('Unable to load backend state.', error);
+          backendConnected = false;
+        }
+      }
+    };
+
+    void initializeRuntimeView();
+
+    return () => {
+      active = false;
+      unsubscribeStateEvent?.();
+      unsubscribeSnapshotEvent?.();
+      unsubscribeActivityEvent?.();
+      unsubscribeStateEvent = null;
+      unsubscribeSnapshotEvent = null;
+      unsubscribeActivityEvent = null;
+    };
   });
 
   $: torState = state ?? snapshot?.tor ?? null;
@@ -88,6 +187,135 @@
       ]
     : [];
 
+  function nextActivityId() {
+    activitySequence += 1;
+    return `${Date.now()}-${activitySequence}`;
+  }
+
+  function normalizeTone(value: unknown): ActivityTone {
+    return value === 'success' ||
+      value === 'warning' ||
+      value === 'danger' ||
+      value === 'neutral' ||
+      value === 'info'
+      ? value
+      : 'neutral';
+  }
+
+  function formatUiError(prefix: string, error: unknown) {
+    const message = error instanceof Error ? error.message.trim() : String(error).trim();
+    return message ? `${prefix} ${message}` : prefix;
+  }
+
+  function humanizeActivityTitle(value: string) {
+    const normalized = value
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+
+    return normalized ? normalized.replace(/^\w/, (first: string) => first.toUpperCase()) : '';
+  }
+
+  function formatActivityTime(timestamp: number) {
+    return new Intl.DateTimeFormat([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(new Date(timestamp));
+  }
+
+  function extractString(value: unknown) {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  function parseTimestamp(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const numeric = Number(value);
+
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+
+    return undefined;
+  }
+
+  function normalizeCoalesceKey(
+    value: unknown,
+    title: string,
+    record: Record<string, unknown>,
+  ): ActivityCoalesceKey | undefined {
+    const explicitKey = extractString(value);
+
+    if (explicitKey === 'bootstrap') {
+      return explicitKey;
+    }
+
+    const looksLikeBootstrap =
+      title.toLowerCase().startsWith('bootstrap') ||
+      typeof record.progress === 'number' ||
+      typeof record.bootstrap === 'number';
+
+    return looksLikeBootstrap ? 'bootstrap' : undefined;
+  }
+
+  function normalizeActivityEntry(payload: TorActivityEventDto | string | null | undefined) {
+    if (payload == null) {
+      return null;
+    }
+
+    if (typeof payload === 'string') {
+      const title = payload.trim();
+
+      return {
+        id: nextActivityId(),
+        timestamp: Date.now(),
+        tone: 'neutral' as ActivityTone,
+        title: title || DEFAULT_ACTIVITY_TITLE,
+      };
+    }
+
+    if (typeof payload !== 'object') {
+      return null;
+    }
+
+    const record = payload as Record<string, unknown>;
+    const rawKind = extractString(record.kind) ?? extractString(record.type) ?? '';
+    const title =
+      extractString(record.title) ?? (humanizeActivityTitle(rawKind) || DEFAULT_ACTIVITY_TITLE);
+    const timestamp =
+      parseTimestamp(record.timestamp_ms) ?? parseTimestamp(record.timestamp) ?? Date.now();
+    const tone = typeof record.tone === 'string' ? normalizeTone(record.tone) : 'neutral';
+    const details = extractString(record.details) ?? extractString(record.message);
+    const coalesceKey = normalizeCoalesceKey(record.coalesce_key, title, record);
+
+    return {
+      id: nextActivityId(),
+      timestamp,
+      tone,
+      title,
+      details,
+      coalesceKey,
+    };
+  }
+
+  function appendActivityEntry(entry: ActivityEntry) {
+    const baseEntries = entry.coalesceKey
+      ? activityEntries.filter((current) => current.coalesceKey !== entry.coalesceKey)
+      : activityEntries;
+
+    activityEntries = [entry, ...baseEntries].slice(0, ACTIVITY_HISTORY_LIMIT);
+  }
+
   async function performAction(action: ActionName) {
     if (pendingAction) {
       return;
@@ -107,20 +335,22 @@
         await requestNewIdentity();
       }
     } catch (error) {
-      actionErrorMessage = error instanceof Error ? error.message : String(error);
+      actionErrorMessage = formatUiError('Action failed.', error);
       pendingAction = null;
       return;
     }
 
-    try {
-      await refreshRuntimeView();
-      loadErrorMessage = '';
-    } catch (error) {
-      loadErrorMessage = error instanceof Error ? error.message : String(error);
-      backendConnected = false;
-    } finally {
-      pendingAction = null;
+    if (eventErrorMessage) {
+      try {
+        await refreshRuntimeView();
+        loadErrorMessage = '';
+      } catch (error) {
+        loadErrorMessage = formatUiError('Unable to refresh backend state.', error);
+        backendConnected = false;
+      }
     }
+
+    pendingAction = null;
   }
 
   function actionLabel(action: ActionName) {
@@ -201,9 +431,15 @@
           </div>
         </div>
 
-        {#if actionErrorMessage}
-          <p class="action-error" aria-live="polite">{actionErrorMessage}</p>
-        {/if}
+        <div class="control-feedback" aria-live="polite">
+          {#if actionErrorMessage}
+            <p class="inline-message inline-message-error">{actionErrorMessage}</p>
+          {/if}
+
+          {#if eventErrorMessage}
+            <p class="inline-message inline-message-muted">{eventErrorMessage}</p>
+          {/if}
+        </div>
       </div>
     </div>
   </header>
@@ -232,7 +468,7 @@
             </div>
           </div>
         {:else}
-          <p class="empty-state">Waiting for backend state.</p>
+          <p class="empty-state">Runtime state is loading.</p>
         {/if}
       </Card>
 
@@ -256,7 +492,7 @@
             </div>
           </div>
         {:else}
-          <p class="empty-state">Waiting for runtime snapshot.</p>
+          <p class="empty-state">Runtime snapshot is loading.</p>
         {/if}
       </Card>
 
@@ -274,7 +510,7 @@
             {/each}
           </ul>
         {:else}
-          <p class="empty-state">Waiting for runtime snapshot.</p>
+          <p class="empty-state">Runtime snapshot is loading.</p>
         {/if}
       </Card>
 
@@ -301,10 +537,43 @@
             </div>
           </div>
         {:else}
-          <p class="empty-state">Waiting for runtime snapshot.</p>
+          <p class="empty-state">Runtime snapshot is loading.</p>
         {/if}
       </Card>
     </div>
+  </section>
+
+  <section class="activity-panel" aria-label="Tor runtime activity">
+    <Card title="Activity" subtitle="Recent runtime events.">
+      {#if activitySubscriptionError}
+        <p class="panel-note panel-note-error">{activitySubscriptionError}</p>
+      {/if}
+
+      <div class={`activity-feed ${activityEntries.length ? 'has-entries' : 'is-empty'}`}>
+        {#if activityEntries.length}
+          <ul class="activity-list">
+            {#each activityEntries as entry}
+              <li class={`activity-item tone-${entry.tone}`}>
+                <span class="activity-marker" aria-hidden="true"></span>
+                <div class="activity-copy">
+                  <div class="activity-headline">
+                    <strong class="activity-title">{entry.title}</strong>
+                    <time class="activity-time" datetime={new Date(entry.timestamp).toISOString()}>
+                      {formatActivityTime(entry.timestamp)}
+                    </time>
+                  </div>
+                  {#if entry.details}
+                    <p class="activity-details">{entry.details}</p>
+                  {/if}
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="empty-state activity-empty-state">Activity will appear here.</p>
+        {/if}
+      </div>
+    </Card>
   </section>
 
   {#if loadErrorMessage}

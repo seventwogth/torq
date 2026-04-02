@@ -8,6 +8,7 @@ default-run = "torq-desktop"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["sync"] }
 torq-core = { path = "../crates/torq-core" }
 torq-runtime = { path = "../crates/torq-runtime" }
 

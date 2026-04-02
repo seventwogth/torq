@@ -6,10 +6,11 @@
   --color-border: #1f2a3a;
   --color-text-primary: #e6edf3;
   --color-text-secondary: #9aa7b2;
+  --color-neutral: #7f8e9c;
   --color-primary: #00b2c2;
-  --color-danger: #d40000;
-  --color-success: #2ecc71;
-  --color-warning: #f39c12;
+  --color-danger: #dd5c5c;
+  --color-success: #38c97b;
+  --color-warning: #f0a629;
   color: var(--color-text-primary);
   background:
     radial-gradient(circle at top left, rgba(0, 178, 194, 0.12), transparent 28%),
@@ -49,28 +50,28 @@ a {
   min-height: 100vh;
   max-width: 1320px;
   margin: 0 auto;
-  padding: 40px 32px 48px;
+  padding: 44px 32px 52px;
   display: grid;
-  gap: 28px;
+  gap: 32px;
   align-content: start;
 }
 
 .hero {
   display: grid;
-  gap: 18px;
-  padding-bottom: 4px;
+  gap: 24px;
+  padding-bottom: 0;
 }
 
 .hero-main {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 28px;
+  gap: 36px;
 }
 
 .hero-copy {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -104,23 +105,29 @@ h1 {
 
 .hero-meta {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   justify-items: start;
 }
 
 .control-bar-wrap {
   display: grid;
-  gap: 10px;
+  gap: 14px;
   justify-items: end;
   min-width: max-content;
 }
 
 .control-bar {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  flex-wrap: wrap;
+  display: grid;
+  gap: 14px;
+  justify-items: end;
   justify-content: flex-end;
+  min-width: min(100%, 360px);
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, var(--color-primary) 12%);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 5%, var(--color-surface)), color-mix(in srgb, var(--color-surface) 94%, black 6%));
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
 }
 
 .primary-actions,
@@ -129,18 +136,25 @@ h1 {
   align-items: center;
 }
 
+.primary-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .secondary-actions {
-  gap: 10px;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
 }
 
 .status-panel {
   display: grid;
-  gap: 16px;
+  gap: 20px;
 }
 
 .section-heading {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .section-heading h2 {
@@ -152,18 +166,19 @@ h1 {
 
 .section-heading p {
   color: var(--color-text-secondary);
-  line-height: 1.5;
+  line-height: 1.55;
+  max-width: 72ch;
 }
 
 .card-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 18px;
 }
 
 .metric-stack {
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
 .metric {
@@ -203,7 +218,7 @@ h1 {
 .supporting-text,
 .empty-state {
   color: var(--color-text-secondary);
-  line-height: 1.5;
+  line-height: 1.55;
   text-align: right;
   max-width: 240px;
 }
@@ -212,7 +227,7 @@ h1 {
   border: 1px solid color-mix(in srgb, var(--color-danger) 28%, transparent);
   border-radius: 16px;
   background: color-mix(in srgb, var(--color-danger) 6%, var(--color-surface));
-  padding: 18px;
+  padding: 18px 20px;
   display: grid;
   gap: 10px;
 }
@@ -225,14 +240,134 @@ h1 {
 }
 
 .error-panel p {
-  color: #ffb0b0;
-  line-height: 1.5;
+  color: color-mix(in srgb, #ffb0b0 88%, var(--color-text-primary) 12%);
+  line-height: 1.55;
   word-break: break-word;
 }
 
+.activity-panel {
+  display: grid;
+}
+
+.activity-feed {
+  display: grid;
+  align-content: start;
+  min-height: 15rem;
+  max-height: 27rem;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.panel-note {
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+}
+
+.panel-note-error {
+  color: color-mix(in srgb, var(--color-danger) 70%, var(--color-text-primary));
+}
+
+.activity-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+
+.activity-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+}
+
+.activity-marker {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 999px;
+  background: var(--color-text-secondary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-text-secondary) 14%, transparent);
+}
+
+.activity-copy {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.activity-headline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px 14px;
+}
+
+.activity-title {
+  color: var(--color-text-primary);
+  font-size: 0.98rem;
+  line-height: 1.35;
+  font-weight: 700;
+  min-width: 0;
+}
+
+.activity-time {
+  color: color-mix(in srgb, var(--color-text-secondary) 88%, white 12%);
+  font-size: 0.75rem;
+  line-height: 1.2;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.activity-details {
+  color: var(--color-text-secondary);
+  font-size: 0.93rem;
+  line-height: 1.55;
+  max-width: 72ch;
+}
+
+.activity-empty-state {
+  max-width: 100%;
+  text-align: left;
+  align-self: center;
+}
+
+.activity-item.tone-success .activity-marker {
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success) 14%, transparent);
+}
+
+.activity-item.tone-warning .activity-marker {
+  background: var(--color-warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-warning) 14%, transparent);
+}
+
+.activity-item.tone-danger .activity-marker {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 14%, transparent);
+}
+
+.activity-item.tone-neutral .activity-marker {
+  background: var(--color-text-secondary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-text-secondary) 14%, transparent);
+}
+
+.activity-item.tone-info .activity-marker {
+  background: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
 .action-button {
-  min-height: 42px;
-  border-radius: 12px;
+  min-height: 40px;
+  border-radius: 13px;
   border: 1px solid var(--color-border);
   background: rgba(255, 255, 255, 0.02);
   color: var(--color-text-primary);
@@ -253,47 +388,62 @@ h1 {
   transform: translateY(-1px);
 }
 
+.action-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 68%, white);
+  outline-offset: 2px;
+}
+
 .action-button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
 .action-button.action-button-primary {
-  min-height: 48px;
-  min-width: 116px;
-  padding: 0 18px;
+  min-height: 52px;
+  min-width: 134px;
+  padding: 0 20px;
+  font-size: 1.01rem;
   font-weight: 700;
+  letter-spacing: 0.015em;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
 }
 
 .action-button.action-button-primary.primary {
-  border-color: color-mix(in srgb, var(--color-primary) 58%, var(--color-border));
-  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-primary) 70%, var(--color-border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 24%, var(--color-surface)), color-mix(in srgb, var(--color-primary) 16%, var(--color-surface)));
 }
 
 .action-button.action-button-primary.primary:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--color-primary) 78%, var(--color-border));
-  background: color-mix(in srgb, var(--color-primary) 24%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-primary) 84%, var(--color-border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 30%, var(--color-surface)), color-mix(in srgb, var(--color-primary) 20%, var(--color-surface)));
 }
 
 .action-button.action-button-primary.danger {
-  border-color: color-mix(in srgb, var(--color-danger) 50%, var(--color-border));
-  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
-  color: #ffd7d7;
+  border-color: color-mix(in srgb, var(--color-danger) 68%, var(--color-border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-danger) 14%, var(--color-surface)), color-mix(in srgb, var(--color-danger) 8%, var(--color-surface)));
+  color: #ffe0e0;
 }
 
 .action-button.action-button-primary.danger:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--color-danger) 70%, var(--color-border));
-  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 82%, var(--color-border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-danger) 18%, var(--color-surface)), color-mix(in srgb, var(--color-danger) 10%, var(--color-surface)));
 }
 
 .action-button.action-button-secondary {
-  min-width: 120px;
+  min-height: 38px;
+  min-width: 118px;
+  padding: 0 14px;
+  color: var(--color-text-secondary);
   background: rgba(255, 255, 255, 0.01);
 }
 
 .action-button.action-button-secondary:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--color-text-secondary) 48%, var(--color-border));
-  background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-text-secondary) 56%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 4%, var(--color-surface));
 }
 
 .action-button[aria-busy='true'] {
@@ -314,18 +464,39 @@ h1 {
   animation: spin 800ms linear infinite;
 }
 
-.action-error {
-  color: #ffb0b0;
-  line-height: 1.5;
+.control-feedback {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  min-height: 44px;
+}
+
+.inline-message,
+.panel-note {
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.inline-message {
   justify-self: end;
   max-width: 420px;
   text-align: right;
+  color: var(--color-text-secondary);
+}
+
+.inline-message-error,
+.panel-note-error {
+  color: color-mix(in srgb, #ffb0b0 88%, var(--color-text-primary) 12%);
+}
+
+.inline-message-muted {
+  color: color-mix(in srgb, var(--color-text-secondary) 92%, white 8%);
 }
 
 @media (max-width: 640px) {
   .shell {
     padding: 24px 20px 32px;
-    gap: 22px;
+    gap: 24px;
   }
 
   .hero-main {
@@ -355,14 +526,16 @@ h1 {
   }
 
   .control-bar {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 14px;
+    min-width: 0;
+    justify-items: stretch;
+    gap: 12px;
   }
 
   .primary-actions,
   .secondary-actions {
     width: 100%;
+    justify-content: flex-start;
+    align-items: stretch;
   }
 
   .secondary-actions {
@@ -376,10 +549,23 @@ h1 {
     min-width: 0;
   }
 
-  .action-error {
+  .control-feedback {
+    justify-items: start;
+    min-height: 0;
+  }
+
+  .inline-message {
     justify-self: start;
     max-width: none;
     text-align: left;
+  }
+
+  .activity-headline {
+    grid-template-columns: 1fr;
+  }
+
+  .activity-time {
+    white-space: normal;
   }
 }
 
