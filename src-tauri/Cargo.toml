@@ -1,0 +1,23 @@
+[package]
+name = "torq-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+default-run = "torq-desktop"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2" }
+torq-core = { path = "../crates/torq-core" }
+torq-runtime = { path = "../crates/torq-runtime" }
+
+[build-dependencies]
+tauri-build = { version = "2" }
+
+[lib]
+name = "torq_desktop"
+crate-type = ["lib"]
+
+[[bin]]
+name = "torq-desktop"
+path = "src/main.rs"

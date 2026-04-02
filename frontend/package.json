@@ -1,0 +1,26 @@
+{
+  "name": "torq-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "svelte": "^5.25.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.5",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@types/node": "^24.3.0",
+    "svelte-check": "^4.2.1",
+    "typescript": "^5.9.2",
+    "vite": "^6.3.5"
+  }
+}
