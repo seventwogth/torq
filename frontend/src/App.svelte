@@ -18,10 +18,13 @@
     fetchTorState,
     restartTor,
     requestNewIdentity,
+    TOR_ACTIVITY_EVENT,
     TOR_RUNTIME_SNAPSHOT_EVENT,
     TOR_STATE_EVENT,
     startTor,
     stopTor,
+    type ActivityTone,
+    type TorActivityEventDto,
     type TorRuntimeSnapshotDto,
     type TorStateDto,
   } from './lib/torq-api';
@@ -32,11 +35,28 @@
   let loadErrorMessage = '';
   let actionErrorMessage = '';
   let eventErrorMessage = '';
+  let activitySubscriptionError = '';
   let pendingAction: ActionName | null = null;
   let unsubscribeStateEvent: UnlistenFn | null = null;
   let unsubscribeSnapshotEvent: UnlistenFn | null = null;
+  let unsubscribeActivityEvent: UnlistenFn | null = null;
+  let activityEntries: ActivityEntry[] = [];
+  let activitySequence = 0;
+
+  const ACTIVITY_HISTORY_LIMIT = 12;
 
   type ActionName = 'start' | 'stop' | 'restart' | 'new_identity';
+
+  type ActivityCoalesceKey = 'bootstrap';
+
+  interface ActivityEntry {
+    id: string;
+    timestamp: number;
+    tone: ActivityTone;
+    title: string;
+    details?: string;
+    coalesceKey?: ActivityCoalesceKey;
+  }
 
   async function refreshRuntimeView() {
     const [nextState, nextSnapshot] = await Promise.all([
@@ -54,32 +74,57 @@
 
     const initializeRuntimeView = async () => {
       try {
-        const [stateUnlisten, snapshotUnlisten] = await Promise.all([
-          listen<TorStateDto>(TOR_STATE_EVENT, (event) => {
-            state = event.payload;
-            backendConnected = true;
-            loadErrorMessage = '';
-          }),
-          listen<TorRuntimeSnapshotDto>(TOR_RUNTIME_SNAPSHOT_EVENT, (event) => {
-            snapshot = event.payload;
-            backendConnected = true;
-            loadErrorMessage = '';
-          }),
-        ]);
-
-        if (!active) {
-          stateUnlisten();
-          snapshotUnlisten();
-          return;
-        }
-
-        unsubscribeStateEvent = stateUnlisten;
-        unsubscribeSnapshotEvent = snapshotUnlisten;
-        eventErrorMessage = '';
+        unsubscribeStateEvent = await listen<TorStateDto>(TOR_STATE_EVENT, (event) => {
+          state = event.payload;
+          backendConnected = true;
+          loadErrorMessage = '';
+        });
       } catch (error) {
         if (active) {
           eventErrorMessage = error instanceof Error ? error.message : String(error);
         }
+      }
+
+      try {
+        unsubscribeSnapshotEvent = await listen<TorRuntimeSnapshotDto>(
+          TOR_RUNTIME_SNAPSHOT_EVENT,
+          (event) => {
+            snapshot = event.payload;
+            backendConnected = true;
+            loadErrorMessage = '';
+          },
+        );
+      } catch (error) {
+        if (active) {
+          eventErrorMessage = error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      try {
+        unsubscribeActivityEvent = await listen<TorActivityEventDto>(
+          TOR_ACTIVITY_EVENT,
+          (event) => {
+            const activityEntry = normalizeActivityEntry(event.payload);
+
+            if (activityEntry) {
+              appendActivityEntry(activityEntry);
+            }
+          },
+        );
+      } catch (error) {
+        if (active) {
+          activitySubscriptionError = 'Activity feed unavailable.';
+        }
+      }
+
+      if (!active) {
+        unsubscribeStateEvent?.();
+        unsubscribeSnapshotEvent?.();
+        unsubscribeActivityEvent?.();
+        unsubscribeStateEvent = null;
+        unsubscribeSnapshotEvent = null;
+        unsubscribeActivityEvent = null;
+        return;
       }
 
       try {
@@ -99,8 +144,10 @@
       active = false;
       unsubscribeStateEvent?.();
       unsubscribeSnapshotEvent?.();
+      unsubscribeActivityEvent?.();
       unsubscribeStateEvent = null;
       unsubscribeSnapshotEvent = null;
+      unsubscribeActivityEvent = null;
     };
   });
 
@@ -138,6 +185,228 @@
         },
       ]
     : [];
+
+  function nextActivityId() {
+    activitySequence += 1;
+    return `${Date.now()}-${activitySequence}`;
+  }
+
+  function normalizeTone(value: unknown): ActivityTone {
+    return value === 'success' ||
+      value === 'warning' ||
+      value === 'danger' ||
+      value === 'neutral' ||
+      value === 'info'
+      ? value
+      : 'neutral';
+  }
+
+  function humanizeKind(kind: string) {
+    return kind
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^\w/, (first: string) => first.toUpperCase());
+  }
+
+  function formatActivityTime(timestamp: number) {
+    return new Intl.DateTimeFormat([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(new Date(timestamp));
+  }
+
+  function extractString(value: unknown) {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+
+  function extractNumber(value: unknown) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  }
+
+  function parseTimestamp(value: unknown) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    }
+
+    return undefined;
+  }
+
+  function parseActivityTone(kind: string, payload: Record<string, unknown>): ActivityTone {
+    const explicitTone = normalizeTone(payload.tone);
+
+    if (payload.tone) {
+      return explicitTone;
+    }
+
+    switch (kind) {
+      case 'started':
+      case 'identityrenewed':
+      case 'controlavailable':
+        return 'success';
+      case 'stopped':
+      case 'bootstrap':
+        return 'warning';
+      case 'startfailed':
+      case 'crashed':
+      case 'error':
+        return 'danger';
+      case 'warning':
+      case 'controlunavailable':
+        return 'warning';
+      default:
+        return 'neutral';
+    }
+  }
+
+  function activityFromKind(kind: string, payload: Record<string, unknown>) {
+    switch (kind) {
+      case 'started':
+        return { title: 'Tor started', tone: 'success' as ActivityTone };
+      case 'stopped':
+        return { title: 'Tor stopped', tone: 'neutral' as ActivityTone };
+      case 'identityrenewed':
+        return { title: 'New identity renewed', tone: 'success' as ActivityTone };
+      case 'startfailed':
+        return {
+          title: 'Tor failed to start',
+          tone: 'danger' as ActivityTone,
+          details: extractString(payload.message) ?? extractString(payload.details),
+        };
+      case 'crashed':
+        return {
+          title: 'Tor crashed',
+          tone: 'danger' as ActivityTone,
+          details: extractString(payload.message) ?? extractString(payload.details),
+        };
+      case 'warning':
+        return {
+          title: 'Runtime warning',
+          tone: 'warning' as ActivityTone,
+          details: extractString(payload.message) ?? extractString(payload.details),
+        };
+      case 'error':
+        return {
+          title: 'Runtime error',
+          tone: 'danger' as ActivityTone,
+          details: extractString(payload.message) ?? extractString(payload.details),
+        };
+      case 'bootstrap': {
+        const progress =
+          extractNumber(payload.bootstrap) ?? extractNumber(payload.progress) ?? undefined;
+
+        return {
+          title: `Bootstrap${typeof progress === 'number' ? `: ${progress}%` : ''}`,
+          tone: progress === 100 ? ('success' as ActivityTone) : ('warning' as ActivityTone),
+          details: extractString(payload.details) ?? extractString(payload.message),
+          coalesceKey: 'bootstrap' as ActivityCoalesceKey,
+        };
+      }
+      case 'controlavailabilitychanged': {
+        const availability = extractString(payload.availability) ?? 'unknown';
+
+        return {
+          title:
+            availability === 'available'
+              ? 'ControlPort became available'
+              : availability === 'unconfigured'
+                ? 'ControlPort unconfigured'
+                : 'ControlPort unavailable',
+          tone:
+            availability === 'available'
+              ? ('success' as ActivityTone)
+              : availability === 'unconfigured'
+                ? ('neutral' as ActivityTone)
+                : ('warning' as ActivityTone),
+          details: availability,
+        };
+      }
+      case 'bootstrapobservationavailabilitychanged': {
+        const availability = extractString(payload.availability) ?? 'unknown';
+
+        return {
+          title:
+            availability === 'available'
+              ? 'Bootstrap observation became available'
+              : availability === 'unconfigured'
+                ? 'Bootstrap observation unconfigured'
+                : 'Bootstrap observation unavailable',
+          tone:
+            availability === 'available'
+              ? ('success' as ActivityTone)
+              : availability === 'unconfigured'
+                ? ('neutral' as ActivityTone)
+                : ('warning' as ActivityTone),
+          details: availability,
+        };
+      }
+      default:
+        return null;
+    }
+  }
+
+  function normalizeActivityEntry(payload: TorActivityEventDto | string | null | undefined) {
+    if (payload == null) {
+      return null;
+    }
+
+    if (typeof payload === 'string') {
+      return {
+        id: nextActivityId(),
+        timestamp: Date.now(),
+        tone: 'neutral' as ActivityTone,
+        title: payload,
+      };
+    }
+
+    if (typeof payload !== 'object') {
+      return null;
+    }
+
+    const record = payload as Record<string, unknown>;
+    const rawKind = extractString(record.kind) ?? extractString(record.type) ?? 'unknown';
+    const kind = rawKind.toLowerCase().replace(/[-_\s]+/g, '');
+    const inferred = activityFromKind(kind, record);
+    const title = extractString(record.title) ?? inferred?.title ?? humanizeKind(rawKind);
+    const timestamp =
+      parseTimestamp(record.timestamp_ms) ?? parseTimestamp(record.timestamp) ?? Date.now();
+    const tone =
+      typeof record.tone === 'string'
+        ? normalizeTone(record.tone)
+        : inferred?.tone ?? parseActivityTone(kind, record);
+    const details = extractString(record.details) ?? inferred?.details;
+    const isBootstrapLike =
+      kind === 'bootstrap' ||
+      extractNumber(record.progress) !== undefined ||
+      extractNumber(record.bootstrap) !== undefined ||
+      title.toLowerCase().startsWith('bootstrap');
+
+    return {
+      id: nextActivityId(),
+      timestamp,
+      tone,
+      title,
+      details,
+      coalesceKey:
+        extractString(record.coalesce_key) === 'bootstrap'
+          ? 'bootstrap'
+          : inferred?.coalesceKey ?? (isBootstrapLike ? 'bootstrap' : undefined),
+    };
+  }
+
+  function appendActivityEntry(entry: ActivityEntry) {
+    const baseEntries = entry.coalesceKey
+      ? activityEntries.filter((current) => current.coalesceKey !== entry.coalesceKey)
+      : activityEntries;
+
+    activityEntries = [entry, ...baseEntries].slice(0, ACTIVITY_HISTORY_LIMIT);
+  }
 
   async function performAction(action: ActionName) {
     if (pendingAction) {
@@ -362,6 +631,35 @@
         {/if}
       </Card>
     </div>
+  </section>
+
+  <section class="activity-panel" aria-label="Tor runtime activity">
+    <Card title="Activity" subtitle="Recent runtime events.">
+      {#if activitySubscriptionError}
+        <p class="activity-note activity-note-error">{activitySubscriptionError}</p>
+      {/if}
+
+      {#if activityEntries.length}
+        <ul class="activity-list">
+          {#each activityEntries as entry}
+            <li class={`activity-item tone-${entry.tone}`}>
+              <span class="activity-marker" aria-hidden="true"></span>
+              <div class="activity-copy">
+                <div class="activity-headline">
+                  <strong>{entry.title}</strong>
+                  <time>{formatActivityTime(entry.timestamp)}</time>
+                </div>
+                {#if entry.details}
+                  <p>{entry.details}</p>
+                {/if}
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="empty-state">Waiting for runtime activity.</p>
+      {/if}
+    </Card>
   </section>
 
   {#if loadErrorMessage}

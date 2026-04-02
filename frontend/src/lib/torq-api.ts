@@ -8,6 +8,7 @@ export const TOR_RESTART_COMMAND = 'tor_restart';
 export const TOR_NEW_IDENTITY_COMMAND = 'tor_new_identity';
 export const TOR_STATE_EVENT = 'tor://state';
 export const TOR_RUNTIME_SNAPSHOT_EVENT = 'tor://runtime-snapshot';
+export const TOR_ACTIVITY_EVENT = 'tor://activity';
 
 export type RuntimeStatus = 'stopped' | 'starting' | 'running' | 'failed';
 export type ControlAvailability = 'unconfigured' | 'unavailable' | 'available';
@@ -30,6 +31,24 @@ export interface TorRuntimeSnapshotDto {
   bootstrap_observation_available: boolean;
   new_identity_available: boolean;
   uses_control_bootstrap_observation: boolean;
+}
+
+export type ActivityTone = 'success' | 'warning' | 'danger' | 'neutral' | 'info';
+
+export interface TorActivityEventDto {
+  id?: number;
+  kind?: string;
+  title?: string;
+  details?: string;
+  tone?: ActivityTone;
+  timestamp?: number | string;
+  timestamp_ms?: number;
+  progress?: number;
+  bootstrap?: number;
+  message?: string;
+  availability?: ControlAvailability;
+  status?: RuntimeStatus;
+  coalesce_key?: string;
 }
 
 export async function fetchTorState() {
