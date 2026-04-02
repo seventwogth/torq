@@ -201,7 +201,7 @@ mod tests {
     async fn external_mode_leaves_log_file_untouched() {
         let log_path = unique_test_path("external-log");
         if let Some(parent) = log_path.parent() {
-            let _ = fs::create_dir_all(parent).await;
+            fs::create_dir_all(parent).await.unwrap();
         }
 
         fs::write(&log_path, b"caller owned").await.unwrap();
@@ -250,6 +250,7 @@ mod tests {
             .as_nanos();
         std::env::temp_dir()
             .join("torq-process-tests")
-            .join(format!("{label}-{nonce}.log"))
+            .join(label)
+            .join(format!("{nonce}.log"))
     }
 }

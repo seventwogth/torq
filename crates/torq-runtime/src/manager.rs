@@ -1,14 +1,18 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, mpsc, watch};
 use torq_core::{TorCommand, TorEvent, TorState};
 
 use crate::config::TorRuntimeConfig;
+use crate::control::{TorControlClient, TorControlError};
 use crate::logs::LogTail;
 use crate::process::TorProcess;
 use crate::runtime_events::{RuntimeEventSender, RUNTIME_EVENT_QUEUE_CAPACITY};
 use crate::state;
 
 pub struct TorManager {
+    config: Arc<TorRuntimeConfig>,
     command_tx: mpsc::Sender<TorCommand>,
     state_rx: watch::Receiver<TorState>,
     event_tx: broadcast::Sender<TorEvent>,
@@ -21,6 +25,7 @@ struct RuntimeSession {
 
 impl TorManager {
     pub async fn new(config: TorRuntimeConfig) -> Result<Self> {
+        let config = Arc::new(config);
         let (command_tx, command_rx) = mpsc::channel(32);
         let (runtime_event_tx, runtime_event_rx) =
             RuntimeEventSender::channel(RUNTIME_EVENT_QUEUE_CAPACITY);
@@ -32,9 +37,10 @@ impl TorManager {
             state_tx,
             event_tx.clone(),
         ));
-        tokio::spawn(run_supervisor(config, command_rx, runtime_event_tx));
+        tokio::spawn(run_supervisor(config.clone(), command_rx, runtime_event_tx));
 
         Ok(Self {
+            config,
             command_tx,
             state_rx,
             event_tx,
@@ -87,10 +93,20 @@ impl TorManager {
     pub async fn new_identity(&self) -> Result<()> {
         self.send(TorCommand::NewIdentity).await
     }
+
+    pub async fn connect_control(&self) -> std::result::Result<TorControlClient, TorControlError> {
+        let Some(control) = self.config.control.clone() else {
+            return Err(TorControlError::MissingConfig);
+        };
+
+        let mut client = TorControlClient::new(control);
+        client.connect().await?;
+        Ok(client)
+    }
 }
 
 async fn run_supervisor(
-    config: TorRuntimeConfig,
+    config: Arc<TorRuntimeConfig>,
     mut command_rx: mpsc::Receiver<TorCommand>,
     runtime_event_tx: RuntimeEventSender,
 ) {
@@ -108,12 +124,17 @@ async fn run_supervisor(
 
             match next_action {
                 SupervisorAction::Command(Some(command)) => {
-                    handle_command(command, &config, &mut session, &runtime_event_tx).await;
+                    handle_command(command, config.as_ref(), &mut session, &runtime_event_tx).await;
                 }
                 SupervisorAction::Command(None) => {
                     if let Some(mut active_session) = session.take() {
-                        let _ = stop_session(&mut active_session, &config, &runtime_event_tx, true)
-                            .await;
+                        let _ = stop_session(
+                            &mut active_session,
+                            config.as_ref(),
+                            &runtime_event_tx,
+                            true,
+                        )
+                        .await;
                     }
                     break;
                 }
@@ -130,7 +151,7 @@ async fn run_supervisor(
                 break;
             };
 
-            handle_command(command, &config, &mut session, &runtime_event_tx).await;
+            handle_command(command, config.as_ref(), &mut session, &runtime_event_tx).await;
         }
     }
 }
