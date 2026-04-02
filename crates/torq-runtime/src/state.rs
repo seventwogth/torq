@@ -1,4 +1,4 @@
-use torq_core::{RuntimeStatus, TorEvent, TorResult, TorState};
+use torq_core::{TorEvent, TorResult, TorState};
 
 pub struct TorStateReducer;
 
@@ -6,27 +6,24 @@ impl TorStateReducer {
     pub fn apply_event(state: &mut TorState, event: &TorEvent) -> TorResult<()> {
         match event {
             TorEvent::Started => {
-                state.status = RuntimeStatus::Starting;
+                *state = TorState::starting(0)?;
             }
             TorEvent::Stopped => {
                 *state = TorState::stopped();
             }
             TorEvent::StartFailed(_) | TorEvent::Crashed(_) => {
-                state.status = RuntimeStatus::Failed;
-                state.bootstrap = 0;
+                *state = TorState::failed();
             }
             TorEvent::Bootstrap(bootstrap) => {
-                state.set_bootstrap(*bootstrap)?;
-                state.status = if *bootstrap >= 100 {
-                    RuntimeStatus::Running
+                *state = if *bootstrap == 100 {
+                    TorState::running()
                 } else {
-                    RuntimeStatus::Starting
+                    TorState::starting(*bootstrap)?
                 };
             }
             TorEvent::Warning(_) | TorEvent::Error(_) | TorEvent::LogLine(_) => {}
         }
 
-        state.validate()?;
         Ok(())
     }
 
@@ -66,8 +63,8 @@ mod tests {
 
         apply_event(&mut state, &TorEvent::Started).unwrap();
 
-        assert_eq!(state.status, RuntimeStatus::Starting);
-        assert_eq!(state.bootstrap, 0);
+        assert_eq!(state.status(), RuntimeStatus::Starting);
+        assert_eq!(state.bootstrap(), 0);
     }
 
     #[test]
@@ -76,20 +73,34 @@ mod tests {
 
         TorStateReducer::apply_event(&mut state, &TorEvent::Bootstrap(100)).unwrap();
 
-        assert_eq!(state.status, RuntimeStatus::Running);
-        assert_eq!(state.bootstrap, 100);
+        assert_eq!(state.status(), RuntimeStatus::Running);
+        assert_eq!(state.bootstrap(), 100);
+    }
+
+    #[test]
+    fn bootstrap_above_hundred_is_rejected() {
+        let mut state = TorState::default();
+
+        assert!(TorStateReducer::apply_event(&mut state, &TorEvent::Bootstrap(101)).is_err());
+        assert_eq!(state, TorState::stopped());
     }
 
     #[test]
     fn stopped_resets_state() {
-        let mut state = TorState {
-            status: RuntimeStatus::Running,
-            bootstrap: 70,
-        };
+        let mut state = TorState::running();
 
         apply_event(&mut state, &TorEvent::Stopped).unwrap();
 
         assert_eq!(state, TorState::stopped());
+    }
+
+    #[test]
+    fn crash_moves_to_failed_state() {
+        let mut state = TorState::starting(42).unwrap();
+
+        apply_event(&mut state, &TorEvent::Crashed("boom".to_string())).unwrap();
+
+        assert_eq!(state, TorState::failed());
     }
 
     #[test]
@@ -101,7 +112,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(state.status, RuntimeStatus::Running);
-        assert_eq!(state.bootstrap, 100);
+        assert_eq!(state.status(), RuntimeStatus::Running);
+        assert_eq!(state.bootstrap(), 100);
     }
 }
