@@ -24,7 +24,7 @@ export function formatRuntimeStatus(status: RuntimeStatus) {
 }
 
 export function formatBooleanStatus(value: boolean) {
-  return value ? 'true' : 'false';
+  return value ? 'Available' : 'Not available';
 }
 
 export function booleanToColor(value: boolean): BadgeTone {

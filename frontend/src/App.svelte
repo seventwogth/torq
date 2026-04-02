@@ -15,6 +15,10 @@
   import {
     fetchTorRuntimeSnapshot,
     fetchTorState,
+    restartTor,
+    requestNewIdentity,
+    startTor,
+    stopTor,
     type TorRuntimeSnapshotDto,
     type TorStateDto,
   } from './lib/torq-api';
@@ -22,37 +26,117 @@
   let backendConnected = false;
   let state: TorStateDto | null = null;
   let snapshot: TorRuntimeSnapshotDto | null = null;
-  let errorMessage = '';
+  let loadErrorMessage = '';
+  let actionErrorMessage = '';
+  let pendingAction: ActionName | null = null;
+
+  type ActionName = 'start' | 'stop' | 'restart' | 'new_identity';
+
+  async function refreshRuntimeView() {
+    const [nextState, nextSnapshot] = await Promise.all([
+      fetchTorState(),
+      fetchTorRuntimeSnapshot(),
+    ]);
+
+    state = nextState;
+    snapshot = nextSnapshot;
+    backendConnected = true;
+  }
 
   onMount(async () => {
     try {
-      const [nextState, nextSnapshot] = await Promise.all([
-        fetchTorState(),
-        fetchTorRuntimeSnapshot(),
-      ]);
-
-      state = nextState;
-      snapshot = nextSnapshot;
-      backendConnected = true;
-      errorMessage = '';
+      await refreshRuntimeView();
+      loadErrorMessage = '';
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
+      loadErrorMessage = error instanceof Error ? error.message : String(error);
       backendConnected = false;
     }
   });
 
   $: torState = state ?? snapshot?.tor ?? null;
+  $: hasRuntimeData = torState !== null && snapshot !== null;
+  $: isTorActive = torState ? torState.status === 'starting' || torState.status === 'running' : false;
+  $: canStart = hasRuntimeData && !isTorActive;
+  $: canStop = isTorActive;
+  $: canRestart = isTorActive;
+  $: canRequestNewIdentity = hasRuntimeData && snapshot?.new_identity_available === true;
   $: capabilities = snapshot
     ? [
-        { label: 'Control configured', value: snapshot.control_configured },
-        { label: 'Control available', value: snapshot.control_available },
-        { label: 'New identity available', value: snapshot.new_identity_available },
+        {
+          label: 'Control configured',
+          value: snapshot.control_configured,
+          statusLabel: snapshot.control_configured ? 'Configured' : 'Not configured',
+        },
+        {
+          label: 'Control available',
+          value: snapshot.control_available,
+          statusLabel: snapshot.control_available ? 'Available' : 'Unavailable',
+        },
+        {
+          label: 'New identity available',
+          value: snapshot.new_identity_available,
+          statusLabel: snapshot.new_identity_available ? 'Available' : 'Unavailable',
+        },
         {
           label: 'Bootstrap observation available',
           value: snapshot.bootstrap_observation_available,
+          statusLabel: snapshot.bootstrap_observation_available ? 'Available' : 'Unavailable',
         },
       ]
     : [];
+
+  async function performAction(action: ActionName) {
+    if (pendingAction) {
+      return;
+    }
+
+    pendingAction = action;
+    actionErrorMessage = '';
+
+    try {
+      if (action === 'start') {
+        await startTor();
+      } else if (action === 'stop') {
+        await stopTor();
+      } else if (action === 'restart') {
+        await restartTor();
+      } else {
+        await requestNewIdentity();
+      }
+    } catch (error) {
+      actionErrorMessage = error instanceof Error ? error.message : String(error);
+      pendingAction = null;
+      return;
+    }
+
+    try {
+      await refreshRuntimeView();
+      loadErrorMessage = '';
+    } catch (error) {
+      loadErrorMessage = error instanceof Error ? error.message : String(error);
+      backendConnected = false;
+    } finally {
+      pendingAction = null;
+    }
+  }
+
+  function actionLabel(action: ActionName) {
+    const labels: Record<ActionName, string> = {
+      start: 'Start',
+      stop: 'Stop',
+      restart: 'Restart',
+      new_identity: 'New Identity',
+    };
+
+    const pendingLabels: Record<ActionName, string> = {
+      start: 'Starting...',
+      stop: 'Stopping...',
+      restart: 'Restarting...',
+      new_identity: 'Requesting...',
+    };
+
+    return pendingAction === action ? pendingLabels[action] : labels[action];
+  }
 </script>
 
 <svelte:head>
@@ -135,7 +219,7 @@
               <li>
                 <span class="metric-label">{capability.label}</span>
                 <StatusBadge
-                  label={formatBooleanStatus(capability.value)}
+                  label={capability.statusLabel}
                   tone={booleanToColor(capability.value)}
                 />
               </li>
@@ -172,13 +256,63 @@
           <p class="empty-state">Waiting for runtime snapshot.</p>
         {/if}
       </Card>
+
+      <Card title="Actions" subtitle="Runtime controls wired through the existing backend commands.">
+        <div class="actions-panel">
+          {#if actionErrorMessage}
+            <p class="action-error">{actionErrorMessage}</p>
+          {/if}
+
+          <div class="actions-grid">
+            <button
+              type="button"
+              class="action-button primary"
+              disabled={!canStart || pendingAction !== null}
+              aria-busy={pendingAction === 'start'}
+              on:click={() => performAction('start')}
+            >
+              {actionLabel('start')}
+            </button>
+
+            <button
+              type="button"
+              class="action-button danger"
+              disabled={!canStop || pendingAction !== null}
+              aria-busy={pendingAction === 'stop'}
+              on:click={() => performAction('stop')}
+            >
+              {actionLabel('stop')}
+            </button>
+
+            <button
+              type="button"
+              class="action-button primary"
+              disabled={!canRestart || pendingAction !== null}
+              aria-busy={pendingAction === 'restart'}
+              on:click={() => performAction('restart')}
+            >
+              {actionLabel('restart')}
+            </button>
+
+            <button
+              type="button"
+              class="action-button primary"
+              disabled={!canRequestNewIdentity || pendingAction !== null}
+              aria-busy={pendingAction === 'new_identity'}
+              on:click={() => performAction('new_identity')}
+            >
+              {actionLabel('new_identity')}
+            </button>
+          </div>
+        </div>
+      </Card>
     </div>
   </section>
 
-  {#if errorMessage}
+  {#if loadErrorMessage}
     <section class="error-panel" aria-live="polite">
       <h2>Load error</h2>
-      <p>{errorMessage}</p>
+      <p>{loadErrorMessage}</p>
     </section>
   {/if}
 </main>
