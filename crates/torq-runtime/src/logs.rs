@@ -5,33 +5,34 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use torq_core::TorEvent;
 
-pub struct LogTail {
+use crate::runtime_events::RuntimeEventSender;
+
+pub(crate) struct LogTail {
     task: Option<JoinHandle<()>>,
 }
 
 impl LogTail {
-    pub async fn spawn(
+    pub(crate) async fn spawn(
         log_path: PathBuf,
         poll_interval: Duration,
-        event_tx: mpsc::UnboundedSender<TorEvent>,
+        event_tx: RuntimeEventSender,
     ) -> Result<Self> {
         prepare_log_file(&log_path).await?;
 
         let task = tokio::spawn(async move {
             if let Err(error) = tail_log_file(log_path, poll_interval, event_tx.clone()).await {
-                let _ = event_tx.send(TorEvent::Error(error.to_string()));
+                event_tx.send(TorEvent::Error(error.to_string())).await;
             }
         });
 
         Ok(Self { task: Some(task) })
     }
 
-    pub async fn stop(&mut self) {
+    pub(crate) async fn stop(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
             let _ = task.await;
@@ -90,7 +91,7 @@ pub fn classify_log_line(line: impl Into<String>) -> Vec<TorEvent> {
 async fn tail_log_file(
     log_path: PathBuf,
     poll_interval: Duration,
-    event_tx: mpsc::UnboundedSender<TorEvent>,
+    event_tx: RuntimeEventSender,
 ) -> Result<()> {
     let mut offset = 0_u64;
     let mut pending = Vec::new();
@@ -129,23 +130,21 @@ async fn tail_log_file(
 
             offset = metadata.len();
             pending.extend_from_slice(&chunk);
-            drain_pending_lines(&mut pending, &event_tx);
+            drain_pending_lines(&mut pending, &event_tx).await;
         }
 
         sleep(poll_interval).await;
     }
 }
 
-fn drain_pending_lines(pending: &mut Vec<u8>, event_tx: &mpsc::UnboundedSender<TorEvent>) {
+async fn drain_pending_lines(pending: &mut Vec<u8>, event_tx: &RuntimeEventSender) {
     while let Some(newline_index) = pending.iter().position(|byte| *byte == b'\n') {
         let line_bytes: Vec<u8> = pending.drain(..=newline_index).collect();
         let line = String::from_utf8_lossy(&line_bytes);
         let line = line.trim_matches(['\r', '\n']).trim();
 
         if !line.is_empty() {
-            for event in classify_log_line(line.to_owned()) {
-                let _ = event_tx.send(event);
-            }
+            event_tx.send_all(classify_log_line(line.to_owned())).await;
         }
     }
 }

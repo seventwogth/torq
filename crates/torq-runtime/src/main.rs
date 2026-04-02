@@ -118,14 +118,12 @@ impl CliOptions {
 }
 
 async fn next_event_line(events: &mut broadcast::Receiver<torq_core::TorEvent>) -> Option<String> {
-    loop {
-        match events.recv().await {
-            Ok(event) => return Some(format!("[event] {event:?}")),
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                return Some(format!("[event] lagged and skipped {skipped} event(s)"));
-            }
-            Err(broadcast::error::RecvError::Closed) => return None,
+    match events.recv().await {
+        Ok(event) => Some(format!("[event] {event:?}")),
+        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+            Some(format!("[event] lagged and skipped {skipped} event(s)"))
         }
+        Err(broadcast::error::RecvError::Closed) => None,
     }
 }
 
