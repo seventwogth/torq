@@ -2,9 +2,12 @@ use std::env;
 use std::path::PathBuf;
 
 use serde::Serialize;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use torq_core::{ControlAvailability, RuntimeStatus, TorState};
 use torq_runtime::{TorManager, TorRuntimeSnapshot};
+
+const TOR_STATE_EVENT: &str = "tor://state";
+const TOR_RUNTIME_SNAPSHOT_EVENT: &str = "tor://runtime-snapshot";
 
 /// Thin application state that keeps one shared `TorManager` alive for the app.
 ///
@@ -190,7 +193,43 @@ pub fn run() {
         .setup(|app| {
             let state = tauri::async_runtime::block_on(build_state())
                 .expect("failed to initialize tor runtime state");
+            let app_handle = app.handle().clone();
             app.manage(state);
+            let app_state = app.state::<AppState>();
+            let state_rx = app_state.manager().state_receiver();
+            let runtime_state_rx = app_state.manager().runtime_state_receiver();
+
+            tauri::async_runtime::spawn({
+                let app_handle = app_handle.clone();
+                async move {
+                    let mut state_rx = state_rx;
+
+                    loop {
+                        if state_rx.changed().await.is_err() {
+                            return;
+                        }
+
+                        let state = *state_rx.borrow_and_update();
+                        let _ = app_handle.emit(TOR_STATE_EVENT, TorStateView::from(state));
+                    }
+                }
+            });
+
+            tauri::async_runtime::spawn(async move {
+                let mut runtime_state_rx = runtime_state_rx;
+
+                loop {
+                    if runtime_state_rx.changed().await.is_err() {
+                        return;
+                    }
+
+                    let runtime_state = *runtime_state_rx.borrow_and_update();
+                    let _ = app_handle.emit(
+                        TOR_RUNTIME_SNAPSHOT_EVENT,
+                        TorRuntimeSnapshotView::from(runtime_state),
+                    );
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

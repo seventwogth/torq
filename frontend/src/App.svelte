@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import Card from './lib/components/Card.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import {
@@ -17,6 +18,8 @@
     fetchTorState,
     restartTor,
     requestNewIdentity,
+    TOR_RUNTIME_SNAPSHOT_EVENT,
+    TOR_STATE_EVENT,
     startTor,
     stopTor,
     type TorRuntimeSnapshotDto,
@@ -28,7 +31,10 @@
   let snapshot: TorRuntimeSnapshotDto | null = null;
   let loadErrorMessage = '';
   let actionErrorMessage = '';
+  let eventErrorMessage = '';
   let pendingAction: ActionName | null = null;
+  let unsubscribeStateEvent: UnlistenFn | null = null;
+  let unsubscribeSnapshotEvent: UnlistenFn | null = null;
 
   type ActionName = 'start' | 'stop' | 'restart' | 'new_identity';
 
@@ -43,14 +49,59 @@
     backendConnected = true;
   }
 
-  onMount(async () => {
-    try {
-      await refreshRuntimeView();
-      loadErrorMessage = '';
-    } catch (error) {
-      loadErrorMessage = error instanceof Error ? error.message : String(error);
-      backendConnected = false;
-    }
+  onMount(() => {
+    let active = true;
+
+    const initializeRuntimeView = async () => {
+      try {
+        const [stateUnlisten, snapshotUnlisten] = await Promise.all([
+          listen<TorStateDto>(TOR_STATE_EVENT, (event) => {
+            state = event.payload;
+            backendConnected = true;
+            loadErrorMessage = '';
+          }),
+          listen<TorRuntimeSnapshotDto>(TOR_RUNTIME_SNAPSHOT_EVENT, (event) => {
+            snapshot = event.payload;
+            backendConnected = true;
+            loadErrorMessage = '';
+          }),
+        ]);
+
+        if (!active) {
+          stateUnlisten();
+          snapshotUnlisten();
+          return;
+        }
+
+        unsubscribeStateEvent = stateUnlisten;
+        unsubscribeSnapshotEvent = snapshotUnlisten;
+        eventErrorMessage = '';
+      } catch (error) {
+        if (active) {
+          eventErrorMessage = error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      try {
+        await refreshRuntimeView();
+        loadErrorMessage = '';
+      } catch (error) {
+        if (active) {
+          loadErrorMessage = error instanceof Error ? error.message : String(error);
+          backendConnected = false;
+        }
+      }
+    };
+
+    void initializeRuntimeView();
+
+    return () => {
+      active = false;
+      unsubscribeStateEvent?.();
+      unsubscribeSnapshotEvent?.();
+      unsubscribeStateEvent = null;
+      unsubscribeSnapshotEvent = null;
+    };
   });
 
   $: torState = state ?? snapshot?.tor ?? null;
@@ -112,15 +163,17 @@
       return;
     }
 
-    try {
-      await refreshRuntimeView();
-      loadErrorMessage = '';
-    } catch (error) {
-      loadErrorMessage = error instanceof Error ? error.message : String(error);
-      backendConnected = false;
-    } finally {
-      pendingAction = null;
+    if (eventErrorMessage) {
+      try {
+        await refreshRuntimeView();
+        loadErrorMessage = '';
+      } catch (error) {
+        loadErrorMessage = error instanceof Error ? error.message : String(error);
+        backendConnected = false;
+      }
     }
+
+    pendingAction = null;
   }
 
   function actionLabel(action: ActionName) {
@@ -203,6 +256,10 @@
 
         {#if actionErrorMessage}
           <p class="action-error" aria-live="polite">{actionErrorMessage}</p>
+        {/if}
+
+        {#if eventErrorMessage}
+          <p class="action-error" aria-live="polite">{eventErrorMessage}</p>
         {/if}
       </div>
     </div>

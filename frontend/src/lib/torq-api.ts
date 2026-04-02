@@ -6,6 +6,8 @@ export const TOR_START_COMMAND = 'tor_start';
 export const TOR_STOP_COMMAND = 'tor_stop';
 export const TOR_RESTART_COMMAND = 'tor_restart';
 export const TOR_NEW_IDENTITY_COMMAND = 'tor_new_identity';
+export const TOR_STATE_EVENT = 'tor://state';
+export const TOR_RUNTIME_SNAPSHOT_EVENT = 'tor://runtime-snapshot';
 
 export type RuntimeStatus = 'stopped' | 'starting' | 'running' | 'failed';
 export type ControlAvailability = 'unconfigured' | 'unavailable' | 'available';
