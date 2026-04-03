@@ -658,217 +658,225 @@
 </svelte:head>
 
 <main class="shell">
-  <header class="hero">
-    <div class="hero-main">
-      <div class="hero-copy">
-        <div class="title-block">
-          <p class="eyebrow">Desktop Runtime</p>
-          <div class="title-row">
-            <h1>torq</h1>
-            <div class="header-actions">
-              <button
-                type="button"
-                class="theme-toggle settings-toggle"
-                aria-haspopup="dialog"
-                aria-expanded={settingsOpen}
-                on:click={openSettingsPanel}
-              >
-                <span class="theme-toggle-label">Settings</span>
-                <span class="theme-toggle-value">{isTorActive ? 'Locked' : 'Edit'}</span>
-              </button>
-              <button
-                type="button"
-                class="theme-toggle"
-                aria-label={`Switch to ${nextThemeLabel} theme`}
-                on:click={toggleTheme}
-              >
-                <span class="theme-toggle-label">Theme</span>
-                <span class="theme-toggle-value">{themeLabel}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="hero-meta">
-          <StatusBadge
-            label={backendStatusLabel}
-            tone={backendConnected ? 'success' : 'danger'}
-          />
-          <p class="hero-text">
-            Local runtime control for Tor process state, ControlPort health, and identity actions.
-          </p>
-        </div>
+  <header class="toolbar" aria-label="Application toolbar">
+    <div class="toolbar-group toolbar-brand-group">
+      <div class="brand-lockup">
+        <p class="toolbar-eyebrow">Desktop runtime shell</p>
+        <h1>torq</h1>
       </div>
 
-      <div class="control-bar-wrap">
-        <div class="control-bar" aria-label="Runtime controls">
-          <div class="primary-actions">
-            <button
-              type="button"
-              class={`action-button action-button-primary ${primaryActionTone}`}
-              disabled={!canRunPrimaryAction || pendingAction !== null}
-              aria-busy={pendingAction === primaryAction}
-              on:click={() => performAction(primaryAction)}
-            >
-              {actionLabel(primaryAction)}
-            </button>
-          </div>
+      <StatusBadge
+        label={backendStatusLabel}
+        tone={backendConnected ? 'success' : 'danger'}
+      />
+    </div>
 
-          <div class="secondary-actions">
-            <button
-              type="button"
-              class="action-button action-button-secondary"
-              disabled={!canRestart || pendingAction !== null}
-              aria-busy={pendingAction === 'restart'}
-              on:click={() => performAction('restart')}
-            >
-              {actionLabel('restart')}
-            </button>
+    <div class="toolbar-group toolbar-runtime" aria-label="Runtime controls">
+      <button
+        type="button"
+        class={`action-button action-button-primary ${primaryActionTone}`}
+        disabled={!canRunPrimaryAction || pendingAction !== null}
+        aria-busy={pendingAction === primaryAction}
+        on:click={() => performAction(primaryAction)}
+      >
+        {actionLabel(primaryAction)}
+      </button>
 
-            <button
-              type="button"
-              class="action-button action-button-secondary"
-              disabled={!canRequestNewIdentity || pendingAction !== null}
-              aria-busy={pendingAction === 'new_identity'}
-              on:click={() => performAction('new_identity')}
-            >
-              {actionLabel('new_identity')}
-            </button>
-          </div>
-        </div>
+      <button
+        type="button"
+        class="action-button action-button-secondary"
+        disabled={!canRestart || pendingAction !== null}
+        aria-busy={pendingAction === 'restart'}
+        on:click={() => performAction('restart')}
+      >
+        {actionLabel('restart')}
+      </button>
 
-        <div class="control-feedback" aria-live="polite">
-          {#if controlHintMessage}
-            <p class="inline-message inline-message-muted">{controlHintMessage}</p>
-          {/if}
+      <button
+        type="button"
+        class="action-button action-button-secondary"
+        disabled={!canRequestNewIdentity || pendingAction !== null}
+        aria-busy={pendingAction === 'new_identity'}
+        on:click={() => performAction('new_identity')}
+      >
+        {actionLabel('new_identity')}
+      </button>
+    </div>
 
-          {#if newIdentityHintMessage && newIdentityHintMessage !== controlHintMessage}
-            <p class="inline-message inline-message-muted">{newIdentityHintMessage}</p>
-          {/if}
+    <div class="toolbar-group toolbar-service">
+      <button
+        type="button"
+        class="toolbar-service-button"
+        aria-haspopup="dialog"
+        aria-expanded={settingsOpen}
+        on:click={openSettingsPanel}
+      >
+        <span class="toolbar-service-label">Settings</span>
+        <span class="toolbar-service-value">{isTorActive ? 'Locked' : 'Edit'}</span>
+      </button>
 
-          {#if actionErrorMessage}
-            <p class="inline-message inline-message-error">{actionErrorMessage}</p>
-          {/if}
-
-          {#if eventErrorMessage}
-            <p class="inline-message inline-message-muted">{eventErrorMessage}</p>
-          {/if}
-        </div>
-      </div>
+      <button
+        type="button"
+        class="toolbar-service-button"
+        aria-label={`Switch to ${nextThemeLabel} theme`}
+        on:click={toggleTheme}
+      >
+        <span class="toolbar-service-label">Theme</span>
+        <span class="toolbar-service-value">{themeLabel}</span>
+      </button>
     </div>
   </header>
 
-  <section class="status-panel" aria-label="Tor runtime status panel">
-    <div class="section-heading">
-      <h2>Status</h2>
-      <p>Rendered from the existing `tor_state` and `tor_runtime_snapshot` desktop commands.</p>
-    </div>
+  <section class="shell-notes" aria-live="polite">
+    {#if controlHintMessage}
+      <p class="inline-message inline-message-muted">{controlHintMessage}</p>
+    {/if}
 
-    <div class="card-grid">
-      <Card title="Tor Process" subtitle="Lifecycle and bootstrap progress from the current runtime state.">
-        {#if torState}
-          <div class="metric-stack">
-            <div class="metric">
-              <span class="metric-label">Status</span>
-              <StatusBadge
-                label={formatRuntimeStatus(torState.status)}
-                tone={statusToColor[torState.status]}
-              />
-            </div>
+    {#if newIdentityHintMessage && newIdentityHintMessage !== controlHintMessage}
+      <p class="inline-message inline-message-muted">{newIdentityHintMessage}</p>
+    {/if}
 
-            <div class="metric">
-              <span class="metric-label">Bootstrap</span>
-              <strong class="metric-value metric-value-mono">{torState.bootstrap}%</strong>
-            </div>
+    {#if actionErrorMessage}
+      <p class="inline-message inline-message-error">{actionErrorMessage}</p>
+    {/if}
 
-            {#if torState.status === 'failed'}
-              <p class="supporting-text">
-                The last start attempt failed. Check the latest action error or activity entry.
-              </p>
-            {/if}
-          </div>
-        {:else}
-          <p class="empty-state">{runtimeStateEmptyMessage}</p>
-        {/if}
-      </Card>
-
-      <Card title="ControlPort" subtitle="ControlPort configuration and current availability.">
-        {#if snapshot}
-          <div class="metric-stack">
-            <div class="metric">
-              <span class="metric-label">Status</span>
-              <StatusBadge
-                label={formatControlPortValue(snapshot.control.port)}
-                tone={controlAvailabilityToColor[snapshot.control.port]}
-              />
-            </div>
-
-            <div class="metric">
-              <span class="metric-label">Bootstrap observation</span>
-              <StatusBadge
-                label={formatControlPortValue(snapshot.control.bootstrap_observation)}
-                tone={controlAvailabilityToColor[snapshot.control.bootstrap_observation]}
-              />
-            </div>
-
-            <p class="supporting-text">{controlPortNote}</p>
-          </div>
-        {:else}
-          <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
-        {/if}
-      </Card>
-
-      <Card title="Capabilities" subtitle="Feature flags derived from the current snapshot.">
-        {#if snapshot}
-          <ul class="capability-list">
-            {#each capabilities as capability}
-              <li>
-                <span class="metric-label">{capability.label}</span>
-                <StatusBadge
-                  label={capability.statusLabel}
-                  tone={booleanToColor(capability.value)}
-                />
-              </li>
-            {/each}
-          </ul>
-        {:else}
-          <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
-        {/if}
-      </Card>
-
-      <Card title="Runtime Mode" subtitle="Current source of bootstrap observation for the UI.">
-        {#if snapshot}
-          <div class="metric-stack">
-            <div class="metric">
-              <span class="metric-label">Bootstrap source</span>
-              <StatusBadge
-                label={formatBootstrapSource(snapshot)}
-                tone={bootstrapSourceToColor(snapshot)}
-              />
-            </div>
-
-            <div class="metric">
-              <span class="metric-label">Observation path</span>
-              <span class="supporting-text">
-                {snapshot.uses_control_bootstrap_observation
-                  ? 'Using ControlPort bootstrap observation.'
-                  : snapshot.control.bootstrap_observation === 'unconfigured'
-                    ? 'ControlPort bootstrap observation is not configured.'
-                    : snapshot.tor.status === 'starting' || snapshot.tor.status === 'running'
-                      ? 'ControlPort bootstrap observation is unavailable, so the desktop shell is falling back to Tor log output.'
-                      : 'Bootstrap observation will appear after Tor starts.'}
-              </span>
-            </div>
-          </div>
-        {:else}
-          <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
-        {/if}
-      </Card>
-    </div>
+    {#if eventErrorMessage}
+      <p class="inline-message inline-message-muted">{eventErrorMessage}</p>
+    {/if}
   </section>
 
-  <section class="activity-panel" aria-label="Tor runtime activity">
-    <Card title="Activity" subtitle="Recent runtime events from the desktop backend.">
+  <div class="content-grid">
+    <section class="panel-surface dashboard-panel" aria-label="Tor runtime status panel">
+      <div class="section-heading">
+        <div class="section-heading-copy">
+          <p class="section-kicker">Dashboard</p>
+          <h2>Runtime overview</h2>
+        </div>
+        <p>
+          Lifecycle, ControlPort health, and runtime capabilities rendered from the existing
+          `tor_state` and `tor_runtime_snapshot` desktop commands.
+        </p>
+      </div>
+
+      <div class="card-grid">
+        <Card title="Tor Process" subtitle="Lifecycle and bootstrap progress from the current runtime state.">
+          {#if torState}
+            <div class="metric-stack">
+              <div class="metric">
+                <span class="metric-label">Status</span>
+                <StatusBadge
+                  label={formatRuntimeStatus(torState.status)}
+                  tone={statusToColor[torState.status]}
+                />
+              </div>
+
+              <div class="metric">
+                <span class="metric-label">Bootstrap</span>
+                <strong class="metric-value metric-value-mono">{torState.bootstrap}%</strong>
+              </div>
+
+              {#if torState.status === 'failed'}
+                <p class="supporting-text">
+                  The last start attempt failed. Check the latest action error or activity entry.
+                </p>
+              {/if}
+            </div>
+          {:else}
+            <p class="empty-state">{runtimeStateEmptyMessage}</p>
+          {/if}
+        </Card>
+
+        <Card title="ControlPort" subtitle="ControlPort configuration and current availability.">
+          {#if snapshot}
+            <div class="metric-stack">
+              <div class="metric">
+                <span class="metric-label">Status</span>
+                <StatusBadge
+                  label={formatControlPortValue(snapshot.control.port)}
+                  tone={controlAvailabilityToColor[snapshot.control.port]}
+                />
+              </div>
+
+              <div class="metric">
+                <span class="metric-label">Bootstrap observation</span>
+                <StatusBadge
+                  label={formatControlPortValue(snapshot.control.bootstrap_observation)}
+                  tone={controlAvailabilityToColor[snapshot.control.bootstrap_observation]}
+                />
+              </div>
+
+              <p class="supporting-text">{controlPortNote}</p>
+            </div>
+          {:else}
+            <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
+          {/if}
+        </Card>
+
+        <Card title="Capabilities" subtitle="Feature flags derived from the current snapshot.">
+          {#if snapshot}
+            <ul class="capability-list">
+              {#each capabilities as capability}
+                <li>
+                  <span class="metric-label">{capability.label}</span>
+                  <StatusBadge
+                    label={capability.statusLabel}
+                    tone={booleanToColor(capability.value)}
+                  />
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
+          {/if}
+        </Card>
+
+        <Card title="Runtime Mode" subtitle="Current source of bootstrap observation for the UI.">
+          {#if snapshot}
+            <div class="metric-stack">
+              <div class="metric">
+                <span class="metric-label">Bootstrap source</span>
+                <StatusBadge
+                  label={formatBootstrapSource(snapshot)}
+                  tone={bootstrapSourceToColor(snapshot)}
+                />
+              </div>
+
+              <div class="metric">
+                <span class="metric-label">Observation path</span>
+                <span class="supporting-text">
+                  {snapshot.uses_control_bootstrap_observation
+                    ? 'Using ControlPort bootstrap observation.'
+                    : snapshot.control.bootstrap_observation === 'unconfigured'
+                      ? 'ControlPort bootstrap observation is not configured.'
+                      : snapshot.tor.status === 'starting' || snapshot.tor.status === 'running'
+                        ? 'ControlPort bootstrap observation is unavailable, so the desktop shell is falling back to Tor log output.'
+                        : 'Bootstrap observation will appear after Tor starts.'}
+                </span>
+              </div>
+            </div>
+          {:else}
+            <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
+          {/if}
+        </Card>
+      </div>
+
+      {#if loadErrorMessage}
+        <section class="error-panel" aria-live="polite">
+          <h2>Backend state unavailable</h2>
+          <p>{loadErrorMessage}</p>
+        </section>
+      {/if}
+    </section>
+
+    <section class="panel-surface activity-panel" aria-label="Tor runtime activity">
+      <div class="section-heading">
+        <div class="section-heading-copy">
+          <p class="section-kicker">Activity</p>
+          <h2>Runtime stream</h2>
+        </div>
+        <p>Recent runtime events from the desktop backend.</p>
+      </div>
+
       {#if activitySubscriptionError}
         <p class="panel-note panel-note-error">{activitySubscriptionError}</p>
       {/if}
@@ -897,15 +905,8 @@
           <p class="empty-state activity-empty-state">{activityEmptyMessage}</p>
         {/if}
       </div>
-    </Card>
-  </section>
-
-  {#if loadErrorMessage}
-    <section class="error-panel" aria-live="polite">
-      <h2>Backend state unavailable</h2>
-      <p>{loadErrorMessage}</p>
     </section>
-  {/if}
+  </div>
 
   <SettingsPanel
     open={settingsOpen}
