@@ -23,6 +23,10 @@ src-tauri/gen/
 *.tmp
 *.pid
 .env*
+.tauri-dev.out
+.tauri-dev.err
+**/.tauri-dev.out
+**/.tauri-dev.err
 
 # Lock files:
 # Keep Cargo.lock tracked for this application workspace.
