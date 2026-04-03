@@ -150,6 +150,13 @@ ul {
   flex-wrap: wrap;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
 .eyebrow {
   color: var(--color-primary);
   text-transform: uppercase;
@@ -208,6 +215,10 @@ h1 {
   color: var(--color-text-primary);
   font-weight: var(--weight-semibold);
   text-align: center;
+}
+
+.settings-toggle .theme-toggle-value {
+  min-width: 56px;
 }
 
 .hero-meta {
@@ -624,6 +635,13 @@ h1 {
   color: color-mix(in srgb, var(--color-text-secondary) 94%, transparent);
 }
 
+.settings-panel-note,
+.settings-panel-meta {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--line-body);
+}
+
 @media (max-width: 960px) {
   .hero-main {
     flex-direction: column;
@@ -645,6 +663,16 @@ h1 {
   .shell {
     padding: 24px 20px 32px;
     gap: var(--space-6);
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .theme-toggle,
+  .settings-toggle {
+    flex: 1 1 0;
+    justify-content: space-between;
   }
 
   .card-grid {

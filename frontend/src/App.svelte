@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import Card from './lib/components/Card.svelte';
+  import SettingsPanel from './lib/components/SettingsPanel.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import {
     formatActionError,
@@ -18,16 +19,19 @@
     statusToColor,
   } from './lib/status';
   import {
+    fetchRuntimeConfig,
     fetchTorRuntimeSnapshot,
     fetchTorState,
     restartTor,
     requestNewIdentity,
+    saveRuntimeConfig,
     TOR_ACTIVITY_EVENT,
     TOR_RUNTIME_SNAPSHOT_EVENT,
     TOR_STATE_EVENT,
     startTor,
     stopTor,
     type ActivityTone,
+    type RuntimeConfigDto,
     type TorActivityEventDto,
     type TorRuntimeSnapshotDto,
     type TorStateDto,
@@ -46,6 +50,11 @@
   let unsubscribeActivityEvent: UnlistenFn | null = null;
   let activityEntries: ActivityEntry[] = [];
   let activitySequence = 0;
+  let settingsOpen = false;
+  let settingsLoading = false;
+  let settingsLoadErrorMessage = '';
+  let settingsConfig: RuntimeConfigDto | null = null;
+  let settingsLoadSequence = 0;
 
   const ACTIVITY_HISTORY_LIMIT = 12;
   const DEFAULT_ACTIVITY_TITLE = 'Runtime event';
@@ -213,6 +222,9 @@
     : deriveNewIdentityHint(snapshot, torState);
   $: activityEmptyMessage = deriveActivityEmptyMessage(torState, loadErrorMessage);
   $: controlPortNote = deriveControlPortNote(snapshot, torState);
+  $: settingsRuntimeStatus = torState?.status ?? snapshot?.tor.status ?? 'stopped';
+  $: settingsRestrictionMessage = deriveSettingsRestrictionMessage(torState);
+  $: settingsControlStatusMessage = deriveSettingsControlStatusMessage(snapshot);
   $: capabilities = snapshot
     ? [
         {
@@ -360,6 +372,106 @@
       : activityEntries;
 
     activityEntries = [entry, ...baseEntries].slice(0, ACTIVITY_HISTORY_LIMIT);
+  }
+
+  function extractErrorMessage(error: unknown) {
+    return error instanceof Error ? error.message.trim() : String(error).trim();
+  }
+
+  function humanizeSettingsMessage(rawMessage: string) {
+    const normalizedMessage = rawMessage.toLowerCase();
+
+    if (
+      normalizedMessage.includes(
+        'runtime config cannot be changed while tor is starting or running',
+      )
+    ) {
+      return 'Runtime config can only be changed while Tor is stopped.';
+    }
+
+    if (normalizedMessage.includes('tor_path') && normalizedMessage.includes('must not be empty')) {
+      return 'Tor path is required.';
+    }
+
+    if (normalizedMessage.includes('log_path') && normalizedMessage.includes('must not be empty')) {
+      return 'Log path is required.';
+    }
+
+    if (
+      normalizedMessage.includes('control.host') &&
+      normalizedMessage.includes('must not be empty')
+    ) {
+      return 'Control host is required when ControlPort config is enabled.';
+    }
+
+    if (
+      normalizedMessage.includes('control.auth.cookie_path') &&
+      normalizedMessage.includes('must not be empty')
+    ) {
+      return 'Cookie path is required when ControlPort auth mode is cookie.';
+    }
+
+    return humanizeRuntimeMessage(rawMessage);
+  }
+
+  function formatSettingsError(prefix: string, error: unknown) {
+    const message = extractErrorMessage(error);
+
+    if (!message) {
+      return prefix;
+    }
+
+    return `${prefix} ${humanizeSettingsMessage(message)}`;
+  }
+
+  async function openSettingsPanel() {
+    settingsOpen = true;
+    settingsLoading = true;
+    settingsLoadErrorMessage = '';
+    settingsConfig = null;
+
+    const loadId = ++settingsLoadSequence;
+
+    try {
+      const config = await fetchRuntimeConfig();
+
+      if (loadId !== settingsLoadSequence) {
+        return;
+      }
+
+      settingsConfig = config;
+    } catch (error) {
+      if (loadId !== settingsLoadSequence) {
+        return;
+      }
+
+      settingsLoadErrorMessage = formatSettingsError(
+        'Could not load runtime configuration.',
+        error,
+      );
+    } finally {
+      if (loadId === settingsLoadSequence) {
+        settingsLoading = false;
+      }
+    }
+  }
+
+  function closeSettingsPanel() {
+    settingsLoadSequence += 1;
+    settingsOpen = false;
+    settingsLoading = false;
+    settingsLoadErrorMessage = '';
+  }
+
+  async function handleSettingsSave(config: RuntimeConfigDto) {
+    try {
+      const savedConfig = await saveRuntimeConfig(config);
+      settingsConfig = savedConfig;
+      settingsLoadErrorMessage = '';
+      return savedConfig;
+    } catch (error) {
+      throw new Error(formatSettingsError('Could not save runtime configuration.', error));
+    }
   }
 
   async function performAction(action: ActionName) {
@@ -515,6 +627,30 @@
 
     return 'ControlPort is reachable for bootstrap observation and New Identity requests.';
   }
+
+  function deriveSettingsRestrictionMessage(torState: TorStateDto | null) {
+    if (!torState || (torState.status !== 'starting' && torState.status !== 'running')) {
+      return '';
+    }
+
+    return `Runtime config is locked while Tor is ${formatRuntimeStatus(torState.status).toLowerCase()}. Stop the runtime before saving changes.`;
+  }
+
+  function deriveSettingsControlStatusMessage(snapshot: TorRuntimeSnapshotDto | null) {
+    if (!snapshot) {
+      return 'ControlPort settings stay optional until you need identity actions or control-backed bootstrap observation.';
+    }
+
+    if (!snapshot.control_configured) {
+      return 'ControlPort config is currently disabled. New Identity and control-backed bootstrap observation stay unavailable until it is configured.';
+    }
+
+    if (!snapshot.control_available) {
+      return 'ControlPort config is present, but availability will only be confirmed after Tor starts and the port becomes reachable.';
+    }
+
+    return 'ControlPort is configured and currently reachable for bootstrap observation and New Identity requests.';
+  }
 </script>
 
 <svelte:head>
@@ -529,15 +665,27 @@
           <p class="eyebrow">Desktop Runtime</p>
           <div class="title-row">
             <h1>torq</h1>
-            <button
-              type="button"
-              class="theme-toggle"
-              aria-label={`Switch to ${nextThemeLabel} theme`}
-              on:click={toggleTheme}
-            >
-              <span class="theme-toggle-label">Theme</span>
-              <span class="theme-toggle-value">{themeLabel}</span>
-            </button>
+            <div class="header-actions">
+              <button
+                type="button"
+                class="theme-toggle settings-toggle"
+                aria-haspopup="dialog"
+                aria-expanded={settingsOpen}
+                on:click={openSettingsPanel}
+              >
+                <span class="theme-toggle-label">Settings</span>
+                <span class="theme-toggle-value">{isTorActive ? 'Locked' : 'Edit'}</span>
+              </button>
+              <button
+                type="button"
+                class="theme-toggle"
+                aria-label={`Switch to ${nextThemeLabel} theme`}
+                on:click={toggleTheme}
+              >
+                <span class="theme-toggle-label">Theme</span>
+                <span class="theme-toggle-value">{themeLabel}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -759,4 +907,26 @@
       <p>{loadErrorMessage}</p>
     </section>
   {/if}
+
+  <SettingsPanel
+    open={settingsOpen}
+    config={settingsConfig}
+    loading={settingsLoading}
+    loadErrorMessage={settingsLoadErrorMessage}
+    runtimeStatus={settingsRuntimeStatus}
+    restricted={isTorActive}
+    restrictionMessage={settingsRestrictionMessage}
+    saveAction={handleSettingsSave}
+    on:cancel={closeSettingsPanel}
+  >
+    <p slot="status" class="settings-panel-note">
+      Current values are loaded fresh from the backend config layer each time the settings panel
+      opens.
+    </p>
+    <p slot="control-status" class="settings-panel-note">{settingsControlStatusMessage}</p>
+    <p slot="runtime-status" class="settings-panel-meta">
+      Config updates stay local to this panel until you save. Backend validation remains the
+      source of truth.
+    </p>
+  </SettingsPanel>
 </main>

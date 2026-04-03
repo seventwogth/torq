@@ -1,4 +1,25 @@
 import { invoke } from '@tauri-apps/api/core';
+import type {
+  RuntimeConfigDto,
+  RuntimeConfigRequest,
+  RuntimeConfigResponse,
+  RuntimeControlAuth,
+  RuntimeControlAuthCookie,
+  RuntimeControlAuthNull,
+  RuntimeControlConfig,
+  RuntimeLogMode,
+} from './runtime-config';
+
+export type {
+  RuntimeConfigDto,
+  RuntimeConfigRequest,
+  RuntimeConfigResponse,
+  RuntimeControlAuth,
+  RuntimeControlAuthCookie,
+  RuntimeControlAuthNull,
+  RuntimeControlConfig,
+  RuntimeLogMode,
+};
 
 export const TOR_STATE_COMMAND = 'tor_state';
 export const TOR_RUNTIME_SNAPSHOT_COMMAND = 'tor_runtime_snapshot';
@@ -6,6 +27,8 @@ export const TOR_START_COMMAND = 'tor_start';
 export const TOR_STOP_COMMAND = 'tor_stop';
 export const TOR_RESTART_COMMAND = 'tor_restart';
 export const TOR_NEW_IDENTITY_COMMAND = 'tor_new_identity';
+export const GET_RUNTIME_CONFIG_COMMAND = 'get_runtime_config';
+export const SET_RUNTIME_CONFIG_COMMAND = 'set_runtime_config';
 export const TOR_STATE_EVENT = 'tor://state';
 export const TOR_RUNTIME_SNAPSHOT_EVENT = 'tor://runtime-snapshot';
 export const TOR_ACTIVITY_EVENT = 'tor://activity';
@@ -73,4 +96,14 @@ export async function restartTor() {
 
 export async function requestNewIdentity() {
   return invoke<void>(TOR_NEW_IDENTITY_COMMAND);
+}
+
+export async function fetchRuntimeConfig() {
+  return invoke<RuntimeConfigResponse>(GET_RUNTIME_CONFIG_COMMAND);
+}
+
+export async function saveRuntimeConfig(config: RuntimeConfigRequest) {
+  return invoke<RuntimeConfigResponse>(SET_RUNTIME_CONFIG_COMMAND, {
+    config,
+  });
 }
