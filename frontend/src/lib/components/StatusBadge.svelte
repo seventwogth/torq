@@ -12,24 +12,24 @@
   .badge {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2, 8px);
-    min-height: 26px;
-    padding: 0 var(--space-3, 12px);
-    border-radius: var(--radius-lg, 10px);
-    border: 1px solid color-mix(in srgb, var(--tone) 18%, var(--color-border));
-    background: color-mix(in srgb, var(--tone) 7%, var(--color-surface));
-    color: var(--tone);
+    gap: 6px;
+    min-height: 24px;
+    padding: 0 10px;
+    border-radius: 7px;
+    border: 1px solid color-mix(in srgb, var(--tone) 12%, var(--color-border));
+    background: color-mix(in srgb, var(--tone) 4%, var(--color-surface));
+    color: color-mix(in srgb, var(--tone) 68%, var(--color-text-secondary));
     font-family: var(--font-ui, 'Manrope', 'Segoe UI', sans-serif);
-    font-size: 0.76rem;
+    font-size: 0.72rem;
     font-weight: 500;
     line-height: 1;
-    letter-spacing: 0.01em;
+    letter-spacing: 0.015em;
     white-space: nowrap;
   }
 
   .dot {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
     border-radius: 999px;
     background: currentColor;
   }

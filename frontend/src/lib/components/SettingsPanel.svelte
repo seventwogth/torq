@@ -293,6 +293,8 @@
                 />
               </label>
             </div>
+
+            <div class="settings-divider" aria-hidden="true"></div>
           </section>
 
           <section class="settings-section" aria-labelledby={`${titleId}-control`}>
@@ -312,7 +314,7 @@
               </label>
               <StatusBadge
                 label={draft.controlEnabled ? 'Configured' : 'Disabled'}
-                tone={draft.controlEnabled ? 'success' : 'neutral'}
+                tone={draft.controlEnabled ? 'muted' : 'neutral'}
               />
             </div>
 
@@ -379,6 +381,8 @@
             <div class="control-note">
               <slot name="control-status" />
             </div>
+
+            <div class="settings-divider" aria-hidden="true"></div>
           </section>
 
           <div class="panel-metadata">
@@ -426,11 +430,10 @@
     height: 100%;
     overflow: auto;
     border-left: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
-    background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-elevated));
-    box-shadow: -10px 0 28px rgba(0, 0, 0, 0.18);
+    background: color-mix(in srgb, var(--color-surface) 96%, var(--color-surface-elevated));
     padding: 24px;
     display: grid;
-    gap: 20px;
+    gap: 16px;
     align-content: start;
   }
 
@@ -438,12 +441,12 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 20px;
+    gap: 16px;
   }
 
   .settings-title-block {
     display: grid;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
   }
 
@@ -477,7 +480,7 @@
   .settings-header-meta {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     flex-wrap: wrap;
     justify-content: flex-end;
   }
@@ -503,9 +506,9 @@
   }
 
   .close-button {
-    min-height: 38px;
-    padding: 0 14px;
-    background: color-mix(in srgb, var(--color-surface-elevated) 62%, transparent);
+    min-height: 34px;
+    padding: 0 12px;
+    background: color-mix(in srgb, var(--color-surface-elevated) 18%, var(--color-surface));
     color: var(--color-text-secondary);
   }
 
@@ -516,7 +519,7 @@
 
   .close-button:disabled,
   .action-button:disabled {
-    opacity: 0.55;
+    opacity: 0.5;
     cursor: not-allowed;
   }
 
@@ -530,83 +533,84 @@
   .settings-status,
   .control-note,
   .panel-metadata {
-    gap: 8px;
+    gap: 6px;
   }
 
   .settings-body {
-    gap: 20px;
+    gap: 16px;
   }
 
   .settings-section {
     display: grid;
-    gap: 16px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    gap: 12px;
   }
 
   .settings-section-header {
     display: grid;
-    gap: 6px;
+    gap: 4px;
   }
 
   .settings-section-header h3 {
     margin: 0;
     color: var(--color-text-primary);
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     line-height: 1.35;
-    font-weight: 600;
+    font-weight: 500;
     letter-spacing: 0.01em;
   }
 
   .settings-section-header p {
-    color: var(--color-text-secondary);
-    font-size: 0.88rem;
+    color: var(--color-muted);
+    font-size: 0.8rem;
     line-height: 1.55;
     max-width: 64ch;
+  }
+
+  .settings-divider {
+    height: 1px;
+    background: color-mix(in srgb, var(--color-border) 84%, transparent);
   }
 
   .field-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
+    gap: 12px 16px;
   }
 
   .field {
     display: grid;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
   }
 
   .field-label {
-    color: color-mix(in srgb, var(--color-text-secondary) 92%, var(--color-text-primary));
-    font-size: 0.82rem;
+    color: color-mix(in srgb, var(--color-text-secondary) 84%, var(--color-muted));
+    font-size: 0.78rem;
     line-height: 1.45;
     letter-spacing: 0.01em;
   }
 
   .field-input {
-    min-height: 40px;
+    min-height: 36px;
     box-sizing: border-box;
     border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--color-surface-elevated) 52%, var(--color-surface));
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-surface-elevated) 18%, var(--color-surface));
     color: var(--color-text-primary);
     padding: 0 12px;
     font: inherit;
     outline: none;
     transition:
       border-color 120ms ease,
-      background-color 120ms ease,
       opacity 120ms ease;
   }
 
   .field-input:focus {
     border-color: var(--color-focus);
-    background: color-mix(in srgb, var(--color-surface-elevated) 64%, var(--color-surface));
   }
 
   .field-input:disabled {
-    opacity: 0.52;
+    opacity: 0.46;
   }
 
   .field-input-mono {
@@ -622,7 +626,7 @@
   .field-hint,
   .field-error {
     line-height: 1.45;
-    font-size: 0.78rem;
+    font-size: 0.74rem;
   }
 
   .field-hint {
@@ -636,24 +640,23 @@
   .control-toggle-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding-bottom: 4px;
+    justify-content: flex-start;
+    gap: 12px;
   }
 
   .toggle {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
-    color: var(--color-text-primary);
-    font-size: 0.88rem;
+    gap: 8px;
+    color: var(--color-text-secondary);
+    font-size: 0.82rem;
     font-weight: 500;
   }
 
   .toggle input {
     margin: 0;
-    width: 15px;
-    height: 15px;
+    width: 14px;
+    height: 14px;
     accent-color: var(--color-primary);
   }
 
@@ -661,14 +664,14 @@
     display: flex;
     justify-content: flex-end;
     gap: 12px;
-    padding-top: 4px;
+    padding-top: 8px;
   }
 
   .action-button {
-    min-height: 44px;
-    padding: 0 16px;
+    min-height: 38px;
+    padding: 0 14px;
     color: var(--color-text-primary);
-    background: color-mix(in srgb, var(--color-surface-elevated) 52%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 20%, var(--color-surface));
   }
 
   .action-button:hover:not(:disabled) {
@@ -680,41 +683,38 @@
   }
 
   .action-button.action-button-primary.primary {
-    border-color: color-mix(in srgb, var(--color-primary) 44%, var(--color-border));
-    background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface-elevated));
+    border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
   }
 
   .inline-message,
   .empty-panel-state {
-    padding: 10px 12px;
-    border-radius: 8px;
-    border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-    background: color-mix(in srgb, var(--color-surface-elevated) 34%, var(--color-surface));
+    padding: 0 0 0 12px;
+    border: 0;
+    border-left: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    background: transparent;
     color: var(--color-text-secondary);
     line-height: 1.5;
   }
 
   .inline-message-warning {
-    border-color: color-mix(in srgb, var(--color-warning) 28%, var(--color-border));
-    background: color-mix(in srgb, var(--color-warning) 9%, var(--color-surface));
+    border-left-color: color-mix(in srgb, var(--color-warning) 32%, var(--color-border));
     color: color-mix(in srgb, var(--color-warning) 74%, var(--color-text-primary));
   }
 
   .inline-message-error {
-    border-color: color-mix(in srgb, var(--color-danger) 26%, var(--color-border));
-    background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+    border-left-color: color-mix(in srgb, var(--color-danger) 30%, var(--color-border));
     color: color-mix(in srgb, var(--color-danger) 74%, var(--color-text-primary));
   }
 
   .inline-message-success {
-    border-color: color-mix(in srgb, var(--color-success) 24%, var(--color-border));
-    background: color-mix(in srgb, var(--color-success) 8%, var(--color-surface));
+    border-left-color: color-mix(in srgb, var(--color-success) 28%, var(--color-border));
     color: color-mix(in srgb, var(--color-success) 74%, var(--color-text-primary));
   }
 
   .empty-panel-state {
     display: grid;
-    gap: 6px;
+    gap: 4px;
   }
 
   .empty-state-title {

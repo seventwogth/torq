@@ -19,17 +19,17 @@
 <style>
   .card {
     box-sizing: border-box;
-    border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-    border-radius: var(--radius-lg, 10px);
-    background: color-mix(in srgb, var(--color-surface-elevated) 36%, var(--color-surface));
-    padding: var(--card-padding, 20px);
+    border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-surface-elevated) 18%, var(--color-surface));
+    padding: 16px;
     display: grid;
-    gap: var(--space-4, 16px);
+    gap: 14px;
   }
 
   .card-header {
     display: grid;
-    gap: 6px;
+    gap: 4px;
   }
 
   h2,
@@ -39,22 +39,22 @@
 
   h2 {
     font-family: var(--font-ui, 'Manrope', 'Segoe UI', sans-serif);
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     line-height: 1.35;
     letter-spacing: 0.01em;
-    font-weight: 600;
+    font-weight: 500;
     color: var(--color-text-primary);
   }
 
   p {
     font-family: var(--font-ui, 'Manrope', 'Segoe UI', sans-serif);
     color: var(--color-muted);
-    font-size: 0.84rem;
+    font-size: 0.8rem;
     line-height: 1.55;
   }
 
   .card-body {
     display: grid;
-    gap: var(--space-3, 12px);
+    gap: 12px;
   }
 </style>
