@@ -695,8 +695,7 @@
             tone={backendConnected ? 'success' : 'danger'}
           />
           <p class="hero-text">
-            Desktop runtime control for Tor process state, ControlPort health, and identity
-            actions.
+            Local runtime control for Tor process state, ControlPort health, and identity actions.
           </p>
         </div>
       </div>
@@ -761,7 +760,7 @@
 
   <section class="status-panel" aria-label="Tor runtime status panel">
     <div class="section-heading">
-      <h2>Status Panel</h2>
+      <h2>Status</h2>
       <p>Rendered from the existing `tor_state` and `tor_runtime_snapshot` desktop commands.</p>
     </div>
 
@@ -869,7 +868,7 @@
   </section>
 
   <section class="activity-panel" aria-label="Tor runtime activity">
-    <Card title="Activity" subtitle="Recent runtime events.">
+    <Card title="Activity" subtitle="Recent runtime events from the desktop backend.">
       {#if activitySubscriptionError}
         <p class="panel-note panel-note-error">{activitySubscriptionError}</p>
       {/if}

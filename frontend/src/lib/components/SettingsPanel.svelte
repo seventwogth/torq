@@ -8,7 +8,6 @@
     validateRuntimeConfigForm,
     type RuntimeConfigFormState,
   } from '../runtime-config-form';
-  import Card from './Card.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
   type RuntimeStatus = 'stopped' | 'starting' | 'running' | 'failed';
@@ -237,7 +236,12 @@
         </div>
       {:else}
         <div class="settings-body">
-          <Card title="Runtime" subtitle="Paths and launch mode for the current runtime.">
+          <section class="settings-section" aria-labelledby={`${titleId}-runtime`}>
+            <div class="settings-section-header">
+              <h3 id={`${titleId}-runtime`}>Runtime</h3>
+              <p>Paths and launch mode for the current runtime.</p>
+            </div>
+
             <div class="field-grid">
               <label class="field">
                 <span class="field-label">Tor path</span>
@@ -289,9 +293,14 @@
                 />
               </label>
             </div>
-          </Card>
+          </section>
 
-          <Card title="ControlPort" subtitle="Minimal control configuration for identity and bootstrap use.">
+          <section class="settings-section" aria-labelledby={`${titleId}-control`}>
+            <div class="settings-section-header">
+              <h3 id={`${titleId}-control`}>ControlPort</h3>
+              <p>Minimal control configuration for identity and bootstrap use.</p>
+            </div>
+
             <div class="control-toggle-row">
               <label class="toggle">
                 <input
@@ -370,7 +379,7 @@
             <div class="control-note">
               <slot name="control-status" />
             </div>
-          </Card>
+          </section>
 
           <div class="panel-metadata">
             <slot name="runtime-status" />
@@ -409,22 +418,16 @@
     z-index: 30;
     display: grid;
     justify-items: end;
-    background: color-mix(in srgb, var(--color-bg) 68%, transparent);
-    backdrop-filter: blur(6px);
+    background: color-mix(in srgb, var(--color-bg) 56%, transparent);
   }
 
   .settings-panel {
-    width: min(100%, 720px);
+    width: min(100%, 700px);
     height: 100%;
     overflow: auto;
-    border-left: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in srgb, var(--color-primary) 4%, var(--color-surface-elevated)),
-        var(--color-surface)
-      );
-    box-shadow: -16px 0 40px rgba(0, 0, 0, 0.2);
+    border-left: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+    background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-elevated));
+    box-shadow: -10px 0 28px rgba(0, 0, 0, 0.18);
     padding: 24px;
     display: grid;
     gap: 20px;
@@ -445,7 +448,7 @@
   }
 
   .eyebrow {
-    color: var(--color-primary);
+    color: color-mix(in srgb, var(--color-primary) 72%, var(--color-text-secondary));
     text-transform: uppercase;
     letter-spacing: 0.14em;
     font-size: 0.74rem;
@@ -454,9 +457,9 @@
 
   h2 {
     margin: 0;
-    font-size: clamp(1.6rem, 2.8vw, 2.1rem);
-    line-height: 1;
-    letter-spacing: -0.04em;
+    font-size: clamp(1.35rem, 2vw, 1.7rem);
+    line-height: 1.05;
+    letter-spacing: -0.03em;
     font-weight: 600;
   }
 
@@ -482,34 +485,33 @@
   .close-button,
   .action-button {
     border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-    border-radius: var(--radius-md, 12px);
+    border-radius: var(--radius-md, 10px);
     font: inherit;
     font-weight: 600;
     cursor: pointer;
     transition:
       background-color 120ms ease,
       border-color 120ms ease,
-      transform 120ms ease,
       opacity 120ms ease;
   }
 
   .close-button:focus-visible,
   .action-button:focus-visible,
   .field-input:focus-visible {
-    outline: 2px solid var(--color-focus);
-    outline-offset: 2px;
+    outline: none;
+    border-color: var(--color-focus);
   }
 
   .close-button {
     min-height: 38px;
     padding: 0 14px;
-    background: color-mix(in srgb, var(--color-surface-elevated) 72%, transparent);
-    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-surface-elevated) 62%, transparent);
+    color: var(--color-text-secondary);
   }
 
   .close-button:hover:not(:disabled) {
-    border-color: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
-    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--color-text-secondary) 36%, var(--color-border));
+    color: var(--color-text-primary);
   }
 
   .close-button:disabled,
@@ -523,13 +525,50 @@
   .control-note,
   .panel-metadata {
     display: grid;
-    gap: 10px;
+  }
+
+  .settings-status,
+  .control-note,
+  .panel-metadata {
+    gap: 8px;
+  }
+
+  .settings-body {
+    gap: 20px;
+  }
+
+  .settings-section {
+    display: grid;
+    gap: 16px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  }
+
+  .settings-section-header {
+    display: grid;
+    gap: 6px;
+  }
+
+  .settings-section-header h3 {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-size: 0.95rem;
+    line-height: 1.35;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .settings-section-header p {
+    color: var(--color-text-secondary);
+    font-size: 0.88rem;
+    line-height: 1.55;
+    max-width: 64ch;
   }
 
   .field-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px 16px;
+    gap: 16px;
   }
 
   .field {
@@ -539,17 +578,18 @@
   }
 
   .field-label {
-    color: var(--color-text-secondary);
-    font-size: 0.9rem;
+    color: color-mix(in srgb, var(--color-text-secondary) 92%, var(--color-text-primary));
+    font-size: 0.82rem;
     line-height: 1.45;
+    letter-spacing: 0.01em;
   }
 
   .field-input {
-    min-height: 42px;
+    min-height: 40px;
     box-sizing: border-box;
     border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--color-surface-elevated) 82%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-surface-elevated) 52%, var(--color-surface));
     color: var(--color-text-primary);
     padding: 0 12px;
     font: inherit;
@@ -561,11 +601,12 @@
   }
 
   .field-input:focus {
-    border-color: color-mix(in srgb, var(--color-primary) 56%, var(--color-border));
+    border-color: var(--color-focus);
+    background: color-mix(in srgb, var(--color-surface-elevated) 64%, var(--color-surface));
   }
 
   .field-input:disabled {
-    opacity: 0.62;
+    opacity: 0.52;
   }
 
   .field-input-mono {
@@ -581,15 +622,15 @@
   .field-hint,
   .field-error {
     line-height: 1.45;
-    font-size: 0.84rem;
+    font-size: 0.78rem;
   }
 
   .field-hint {
-    color: var(--color-text-secondary);
+    color: var(--color-muted);
   }
 
   .field-error {
-    color: color-mix(in srgb, var(--color-danger) 74%, var(--color-text-primary));
+    color: color-mix(in srgb, var(--color-danger) 68%, var(--color-text-primary));
   }
 
   .control-toggle-row {
@@ -597,7 +638,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    margin-bottom: 16px;
+    padding-bottom: 4px;
   }
 
   .toggle {
@@ -605,14 +646,14 @@
     align-items: center;
     gap: 10px;
     color: var(--color-text-primary);
-    font-size: 0.92rem;
+    font-size: 0.88rem;
     font-weight: 500;
   }
 
   .toggle input {
     margin: 0;
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
     accent-color: var(--color-primary);
   }
 
@@ -627,11 +668,11 @@
     min-height: 44px;
     padding: 0 16px;
     color: var(--color-text-primary);
-    background: color-mix(in srgb, var(--color-surface-elevated) 72%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 52%, transparent);
   }
 
   .action-button:hover:not(:disabled) {
-    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--color-text-secondary) 34%, var(--color-border));
   }
 
   .action-button.action-button-secondary {
@@ -639,21 +680,16 @@
   }
 
   .action-button.action-button-primary.primary {
-    border-color: color-mix(in srgb, var(--color-primary) 58%, var(--color-border));
-    background:
-      linear-gradient(
-        180deg,
-        color-mix(in srgb, var(--color-primary) 30%, var(--color-surface-elevated)),
-        color-mix(in srgb, var(--color-primary) 16%, var(--color-surface))
-      );
+    border-color: color-mix(in srgb, var(--color-primary) 44%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface-elevated));
   }
 
   .inline-message,
   .empty-panel-state {
     padding: 10px 12px;
-    border-radius: 12px;
+    border-radius: 8px;
     border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-    background: color-mix(in srgb, var(--color-surface-elevated) 64%, transparent);
+    background: color-mix(in srgb, var(--color-surface-elevated) 34%, var(--color-surface));
     color: var(--color-text-secondary);
     line-height: 1.5;
   }
@@ -699,7 +735,7 @@
       height: auto;
       border-left: 0;
       border-top: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-      border-radius: 20px 20px 0 0;
+      border-radius: 14px 14px 0 0;
       padding: 20px;
     }
 

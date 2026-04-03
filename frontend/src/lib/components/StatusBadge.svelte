@@ -13,26 +13,25 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-2, 8px);
-    min-height: 28px;
+    min-height: 26px;
     padding: 0 var(--space-3, 12px);
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--tone) 24%, var(--color-border));
-    background: color-mix(in srgb, var(--tone) 10%, var(--color-surface));
+    border-radius: var(--radius-lg, 10px);
+    border: 1px solid color-mix(in srgb, var(--tone) 18%, var(--color-border));
+    background: color-mix(in srgb, var(--tone) 7%, var(--color-surface));
     color: var(--tone);
     font-family: var(--font-ui, 'Manrope', 'Segoe UI', sans-serif);
-    font-size: 0.8rem;
-    font-weight: 600;
+    font-size: 0.76rem;
+    font-weight: 500;
     line-height: 1;
     letter-spacing: 0.01em;
     white-space: nowrap;
   }
 
   .dot {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 999px;
     background: currentColor;
-    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
   }
 
   .tone-success {
