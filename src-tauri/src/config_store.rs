@@ -187,6 +187,8 @@ mod tests {
         let store = RuntimeConfigStore::new(path.clone(), fallback).unwrap();
         let config = TorRuntimeConfig::new("C:/Tor/tor.exe", "C:/Tor/tor.log")
             .with_log_mode(LogMode::External)
+            .with_torrc_path("C:/Tor/torrc")
+            .with_use_torrc(true)
             .with_args(["--ClientOnly", "1"])
             .with_working_dir("C:/Tor")
             .with_stop_timeout(Duration::from_secs(9))
@@ -198,6 +200,8 @@ mod tests {
         assert_eq!(loaded.tor_path, config.tor_path);
         assert_eq!(loaded.log_path, config.log_path);
         assert_eq!(loaded.log_mode, config.log_mode);
+        assert_eq!(loaded.torrc_path, config.torrc_path);
+        assert_eq!(loaded.use_torrc, config.use_torrc);
         assert_eq!(loaded.args, config.args);
         assert_eq!(loaded.working_dir, config.working_dir);
         assert_eq!(loaded.stop_timeout, config.stop_timeout);

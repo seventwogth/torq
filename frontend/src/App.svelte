@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-  import Card from './lib/components/Card.svelte';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import SettingsPanel from './lib/components/SettingsPanel.svelte';
   import StatusBadge from './lib/components/StatusBadge.svelte';
   import {
@@ -55,6 +55,8 @@
   let settingsLoadErrorMessage = '';
   let settingsConfig: RuntimeConfigDto | null = null;
   let settingsLoadSequence = 0;
+  let windowMaximized = false;
+  let windowControlsAvailable = false;
 
   const ACTIVITY_HISTORY_LIMIT = 12;
   const DEFAULT_ACTIVITY_TITLE = 'Runtime event';
@@ -62,8 +64,8 @@
 
   type ActionName = 'start' | 'stop' | 'restart' | 'new_identity';
   type ThemeName = 'dark' | 'light';
-
   type ActivityCoalesceKey = 'bootstrap';
+  type StatusTone = 'success' | 'warning' | 'danger' | 'neutral' | 'muted';
 
   interface ActivityEntry {
     id: string;
@@ -87,6 +89,76 @@
     backendConnected = true;
   }
 
+  function canUseDesktopWindowApis() {
+    return (
+      typeof window !== 'undefined' &&
+      '__TAURI_INTERNALS__' in (window as Window & { __TAURI_INTERNALS__?: unknown })
+    );
+  }
+
+  function getDesktopWindow() {
+    return canUseDesktopWindowApis() ? getCurrentWindow() : null;
+  }
+
+  async function initializeWindowChrome() {
+    const desktopWindow = getDesktopWindow();
+
+    if (!desktopWindow) {
+      return;
+    }
+
+    windowControlsAvailable = true;
+
+    try {
+      windowMaximized = await desktopWindow.isMaximized();
+    } catch {
+      windowMaximized = false;
+    }
+  }
+
+  async function minimizeWindow() {
+    const desktopWindow = getDesktopWindow();
+
+    if (!desktopWindow) {
+      return;
+    }
+
+    try {
+      await desktopWindow.minimize();
+    } catch {
+      // Window chrome is non-critical; runtime controls must remain usable.
+    }
+  }
+
+  async function toggleWindowMaximize() {
+    const desktopWindow = getDesktopWindow();
+
+    if (!desktopWindow) {
+      return;
+    }
+
+    try {
+      await desktopWindow.toggleMaximize();
+      windowMaximized = !windowMaximized;
+    } catch {
+      // Ignore window chrome failures and keep the rest of the UI responsive.
+    }
+  }
+
+  async function closeWindow() {
+    const desktopWindow = getDesktopWindow();
+
+    if (!desktopWindow) {
+      return;
+    }
+
+    try {
+      await desktopWindow.close();
+    } catch {
+      // Ignore window chrome failures and keep the rest of the UI responsive.
+    }
+  }
+
   function normalizeTheme(value: string | null | undefined): ThemeName {
     return value === 'light' ? 'light' : 'dark';
   }
@@ -108,6 +180,7 @@
     );
 
     applyTheme(initialTheme);
+    void initializeWindowChrome();
 
     const initializeRuntimeView = async () => {
       try {
@@ -205,8 +278,10 @@
   $: canRestart = isTorActive;
   $: canRequestNewIdentity = hasRuntimeData && snapshot?.new_identity_available === true;
   $: primaryAction = (isTorActive ? 'stop' : 'start') as ActionName;
-  $: primaryActionTone = primaryAction === 'start' ? 'primary' : 'danger';
-  $: canRunPrimaryAction = primaryAction === 'start' ? canStart : canStop;
+  $: displayedPrimaryAction = (pendingAction === 'stop' ? 'stop' : primaryAction) as ActionName;
+  $: primaryActionTone = displayedPrimaryAction === 'start' ? 'primary' : 'danger';
+  $: primaryActionStateClass = pendingAction === 'stop' ? 'is-stopping' : '';
+  $: canRunPrimaryAction = displayedPrimaryAction === 'start' ? canStart : canStop;
   $: backendStatusLabel = backendConnected ? 'desktop backend ready' : 'desktop backend unavailable';
   $: themeLabel = theme === 'dark' ? 'Dark' : 'Light';
   $: nextThemeLabel = theme === 'dark' ? 'light' : 'dark';
@@ -225,6 +300,13 @@
   $: settingsRuntimeStatus = torState?.status ?? snapshot?.tor.status ?? 'stopped';
   $: settingsRestrictionMessage = deriveSettingsRestrictionMessage(torState);
   $: settingsControlStatusMessage = deriveSettingsControlStatusMessage(snapshot);
+  $: runtimeStatusLabel = deriveRuntimeStatusLabel(torState, backendConnected);
+  $: runtimeStatusTone = deriveRuntimeStatusTone(torState, backendConnected);
+  $: runtimeFocalMessage = deriveRuntimeFocalMessage(torState, loadErrorMessage);
+  $: controlSummaryLabel = deriveControlSummaryLabel(snapshot, torState);
+  $: controlSummaryTone = deriveControlSummaryTone(snapshot, torState);
+  $: bootstrapSourceLabel = snapshot ? formatBootstrapSource(snapshot) : 'Pending';
+  $: bootstrapSourceTone = snapshot ? bootstrapSourceToColor(snapshot) : 'neutral';
   $: capabilities = snapshot
     ? [
         {
@@ -532,6 +614,95 @@
     return pendingAction === action ? pendingLabels[action] : labels[action];
   }
 
+  function deriveRuntimeStatusLabel(torState: TorStateDto | null, backendConnected: boolean) {
+    if (torState) {
+      return formatRuntimeStatus(torState.status);
+    }
+
+    return backendConnected ? 'Pending' : 'Connecting';
+  }
+
+  function deriveRuntimeStatusTone(
+    torState: TorStateDto | null,
+    backendConnected: boolean,
+  ): StatusTone {
+    if (torState) {
+      return statusToColor[torState.status];
+    }
+
+    return backendConnected ? 'neutral' : 'warning';
+  }
+
+  function deriveRuntimeFocalMessage(torState: TorStateDto | null, loadErrorMessage: string) {
+    if (loadErrorMessage) {
+      return 'The desktop backend is not currently providing a readable runtime state.';
+    }
+
+    if (!torState) {
+      return 'Reading runtime state from the desktop backend.';
+    }
+
+    if (torState.status === 'starting') {
+      return 'Tor is bootstrapping. Progress and control availability will continue to update in place.';
+    }
+
+    if (torState.status === 'running') {
+      return 'Tor is running. Identity and control-backed actions remain available when ControlPort stays reachable.';
+    }
+
+    if (torState.status === 'failed') {
+      return 'The last Tor start attempt failed. Review the latest action error or activity entry before retrying.';
+    }
+
+    return 'Tor is stopped. Start the runtime to restore bootstrap observation and lifecycle activity.';
+  }
+
+  function deriveControlSummaryLabel(
+    snapshot: TorRuntimeSnapshotDto | null,
+    torState: TorStateDto | null,
+  ) {
+    if (!snapshot) {
+      return 'Pending';
+    }
+
+    if (!snapshot.control_configured) {
+      return 'Disabled';
+    }
+
+    if (snapshot.control_available) {
+      return 'Reachable';
+    }
+
+    if (torState?.status === 'starting' || torState?.status === 'running') {
+      return 'Unavailable';
+    }
+
+    return 'Awaiting start';
+  }
+
+  function deriveControlSummaryTone(
+    snapshot: TorRuntimeSnapshotDto | null,
+    torState: TorStateDto | null,
+  ): StatusTone {
+    if (!snapshot) {
+      return 'neutral';
+    }
+
+    if (!snapshot.control_configured) {
+      return 'muted';
+    }
+
+    if (snapshot.control_available) {
+      return 'success';
+    }
+
+    if (torState?.status === 'starting' || torState?.status === 'running') {
+      return 'warning';
+    }
+
+    return 'neutral';
+  }
+
   function deriveControlHint(
     snapshot: TorRuntimeSnapshotDto | null,
     torState: TorStateDto | null,
@@ -658,254 +829,336 @@
 </svelte:head>
 
 <main class="shell">
-  <header class="toolbar" aria-label="Application toolbar">
-    <div class="toolbar-group toolbar-brand-group">
-      <div class="brand-lockup">
-        <p class="toolbar-eyebrow">Desktop runtime shell</p>
+  <header class="app-header" aria-label="Application header">
+    <div class="app-header-row">
+      <div class="header-left">
         <h1>torq</h1>
+        <span
+          class={`header-backend-status ${backendConnected ? 'is-success' : 'is-danger'}`}
+          title={backendStatusLabel}
+        >
+          <span class="header-status-dot" aria-hidden="true"></span>
+          <span class="header-backend-label">{backendStatusLabel}</span>
+        </span>
+        <span
+          class={`header-runtime-status tone-${runtimeStatusTone}`}
+          aria-label={`Runtime status: ${runtimeStatusLabel}`}
+        >
+          {runtimeStatusLabel}
+        </span>
       </div>
 
-      <StatusBadge
-        label={backendStatusLabel}
-        tone={backendConnected ? 'success' : 'danger'}
-      />
-    </div>
+      <div class="header-drag-space" aria-hidden="true"></div>
 
-    <div class="toolbar-group toolbar-runtime" aria-label="Runtime controls">
-      <button
-        type="button"
-        class={`action-button action-button-primary ${primaryActionTone}`}
-        disabled={!canRunPrimaryAction || pendingAction !== null}
-        aria-busy={pendingAction === primaryAction}
-        on:click={() => performAction(primaryAction)}
-      >
-        {actionLabel(primaryAction)}
-      </button>
+      <div class="header-runtime-actions" aria-label="Runtime controls">
+        <button
+          type="button"
+          class={`action-button header-action-button action-button-primary ${primaryActionTone} ${primaryActionStateClass}`}
+          disabled={!canRunPrimaryAction || pendingAction !== null}
+          aria-busy={pendingAction === displayedPrimaryAction}
+          on:click={() => performAction(displayedPrimaryAction)}
+        >
+          {actionLabel(displayedPrimaryAction)}
+        </button>
 
-      <button
-        type="button"
-        class="action-button action-button-secondary"
-        disabled={!canRestart || pendingAction !== null}
-        aria-busy={pendingAction === 'restart'}
-        on:click={() => performAction('restart')}
-      >
-        {actionLabel('restart')}
-      </button>
+        <button
+          type="button"
+          class="action-button header-action-button action-button-secondary"
+          disabled={!canRestart || pendingAction !== null}
+          aria-busy={pendingAction === 'restart'}
+          on:click={() => performAction('restart')}
+        >
+          {actionLabel('restart')}
+        </button>
 
-      <button
-        type="button"
-        class="action-button action-button-secondary"
-        disabled={!canRequestNewIdentity || pendingAction !== null}
-        aria-busy={pendingAction === 'new_identity'}
-        on:click={() => performAction('new_identity')}
-      >
-        {actionLabel('new_identity')}
-      </button>
-    </div>
+        <button
+          type="button"
+          class="action-button header-action-button action-button-secondary"
+          disabled={!canRequestNewIdentity || pendingAction !== null}
+          aria-busy={pendingAction === 'new_identity'}
+          on:click={() => performAction('new_identity')}
+        >
+          {actionLabel('new_identity')}
+        </button>
+      </div>
 
-    <div class="toolbar-group toolbar-service">
-      <button
-        type="button"
-        class="toolbar-service-button"
-        aria-haspopup="dialog"
-        aria-expanded={settingsOpen}
-        on:click={openSettingsPanel}
-      >
-        <span class="toolbar-service-label">Settings</span>
-        <span class="toolbar-service-value">{isTorActive ? 'Locked' : 'Edit'}</span>
-      </button>
+      <div class="header-secondary-actions">
+        <button
+          type="button"
+          class="toolbar-service-button header-secondary-button"
+          aria-haspopup="dialog"
+          aria-expanded={settingsOpen}
+          on:click={openSettingsPanel}
+        >
+          Settings
+          <span class="toolbar-service-value">{isTorActive ? 'Locked' : 'Edit'}</span>
+        </button>
 
-      <button
-        type="button"
-        class="toolbar-service-button"
-        aria-label={`Switch to ${nextThemeLabel} theme`}
-        on:click={toggleTheme}
-      >
-        <span class="toolbar-service-label">Theme</span>
-        <span class="toolbar-service-value">{themeLabel}</span>
-      </button>
+        <button
+          type="button"
+          class="toolbar-service-button header-secondary-button"
+          aria-label={`Switch to ${nextThemeLabel} theme`}
+          on:click={toggleTheme}
+        >
+          Theme
+          <span class="toolbar-service-value">{themeLabel}</span>
+        </button>
+      </div>
+
+      {#if windowControlsAvailable}
+        <div class="window-controls" aria-label="Window controls">
+          <button
+            type="button"
+            class="window-control"
+            aria-label="Minimize window"
+            on:click={minimizeWindow}
+          >
+            <span class="window-control-glyph is-minimize" aria-hidden="true"></span>
+          </button>
+
+          <button
+            type="button"
+            class="window-control"
+            aria-label={windowMaximized ? 'Restore window' : 'Maximize window'}
+            on:click={toggleWindowMaximize}
+          >
+            <span
+              class={`window-control-glyph ${windowMaximized ? 'is-restore' : 'is-maximize'}`}
+              aria-hidden="true"
+            ></span>
+          </button>
+
+          <button
+            type="button"
+            class="window-control is-close"
+            aria-label="Close window"
+            on:click={closeWindow}
+          >
+            <span class="window-control-glyph is-close" aria-hidden="true"></span>
+          </button>
+        </div>
+      {/if}
     </div>
   </header>
 
-  <section class="shell-notes" aria-live="polite">
-    {#if controlHintMessage}
-      <p class="inline-message inline-message-muted">{controlHintMessage}</p>
-    {/if}
+  <div class="shell-content">
+    <section class="shell-notes" aria-live="polite">
+      {#if controlHintMessage}
+        <p class="inline-message inline-message-muted">{controlHintMessage}</p>
+      {/if}
 
-    {#if newIdentityHintMessage && newIdentityHintMessage !== controlHintMessage}
-      <p class="inline-message inline-message-muted">{newIdentityHintMessage}</p>
-    {/if}
+      {#if newIdentityHintMessage && newIdentityHintMessage !== controlHintMessage}
+        <p class="inline-message inline-message-muted">{newIdentityHintMessage}</p>
+      {/if}
 
-    {#if actionErrorMessage}
-      <p class="inline-message inline-message-error">{actionErrorMessage}</p>
-    {/if}
+      {#if actionErrorMessage}
+        <p class="inline-message inline-message-error">{actionErrorMessage}</p>
+      {/if}
 
-    {#if eventErrorMessage}
-      <p class="inline-message inline-message-muted">{eventErrorMessage}</p>
-    {/if}
-  </section>
+      {#if eventErrorMessage}
+        <p class="inline-message inline-message-muted">{eventErrorMessage}</p>
+      {/if}
+    </section>
 
-  <div class="content-grid">
-    <section class="panel-surface dashboard-panel" aria-label="Tor runtime status panel">
-      <div class="section-heading">
-        <div class="section-heading-copy">
-          <p class="section-kicker">Dashboard</p>
-          <h2>Runtime overview</h2>
-        </div>
-        <p>
-          Lifecycle, ControlPort health, and runtime capabilities rendered from the existing
-          `tor_state` and `tor_runtime_snapshot` desktop commands.
-        </p>
-      </div>
+    <div class="content-grid">
+      <section class="runtime-column" aria-label="Runtime overview">
+        <section class="app-section runtime-focus-panel" aria-label="Tor Process">
+          <div class="section-heading">
+            <div class="section-heading-copy">
+              <p class="section-kicker">Runtime</p>
+              <h2>Primary state</h2>
+            </div>
+            <p>Lifecycle state stays first. Control and observation details remain secondary.</p>
+          </div>
 
-      <div class="card-grid">
-        <Card title="Tor Process" subtitle="Lifecycle and bootstrap progress from the current runtime state.">
           {#if torState}
-            <div class="metric-stack">
-              <div class="metric">
-                <span class="metric-label">Status</span>
-                <StatusBadge
-                  label={formatRuntimeStatus(torState.status)}
-                  tone={statusToColor[torState.status]}
-                />
+            <div class="runtime-focus-layout">
+              <div class="runtime-focus-primary">
+                <div class="runtime-state-stack">
+                  <span class="runtime-state-label">Current state</span>
+                  <h3 class={`runtime-state-value tone-${runtimeStatusTone}`}>{runtimeStatusLabel}</h3>
+                  <p class="runtime-state-copy">{runtimeFocalMessage}</p>
+                </div>
               </div>
 
-              <div class="metric">
-                <span class="metric-label">Bootstrap</span>
-                <strong class="metric-value metric-value-mono">{torState.bootstrap}%</strong>
-              </div>
+              <div class="runtime-metrics">
+                <div class="runtime-metric">
+                  <span class="metric-label">Bootstrap</span>
+                  <strong class="metric-value metric-value-mono runtime-bootstrap-value">
+                    {torState.bootstrap}%
+                  </strong>
+                  <p class="supporting-text">Current progress reported by the runtime state.</p>
+                </div>
 
-              {#if torState.status === 'failed'}
-                <p class="supporting-text">
-                  The last start attempt failed. Check the latest action error or activity entry.
-                </p>
-              {/if}
+                <div class="runtime-metric">
+                  <span class="metric-label">ControlPort</span>
+                  <StatusBadge label={controlSummaryLabel} tone={controlSummaryTone} />
+                  <p class="supporting-text">{controlPortNote || 'Waiting for ControlPort state.'}</p>
+                </div>
+
+                <div class="runtime-metric">
+                  <span class="metric-label">Bootstrap source</span>
+                  <StatusBadge label={bootstrapSourceLabel} tone={bootstrapSourceTone} />
+                  <p class="supporting-text">
+                    {snapshot?.uses_control_bootstrap_observation
+                      ? 'Using ControlPort bootstrap observation.'
+                      : 'Falling back to runtime log observation when control-backed updates are unavailable.'}
+                  </p>
+                </div>
+              </div>
             </div>
           {:else}
             <p class="empty-state">{runtimeStateEmptyMessage}</p>
           {/if}
-        </Card>
+        </section>
 
-        <Card title="ControlPort" subtitle="ControlPort configuration and current availability.">
-          {#if snapshot}
-            <div class="metric-stack">
-              <div class="metric">
-                <span class="metric-label">Status</span>
-                <StatusBadge
-                  label={formatControlPortValue(snapshot.control.port)}
-                  tone={controlAvailabilityToColor[snapshot.control.port]}
-                />
-              </div>
-
-              <div class="metric">
-                <span class="metric-label">Bootstrap observation</span>
-                <StatusBadge
-                  label={formatControlPortValue(snapshot.control.bootstrap_observation)}
-                  tone={controlAvailabilityToColor[snapshot.control.bootstrap_observation]}
-                />
-              </div>
-
-              <p class="supporting-text">{controlPortNote}</p>
+        <section class="app-section dashboard-panel" aria-label="Runtime details">
+          <div class="section-heading">
+            <div class="section-heading-copy">
+              <p class="section-kicker">Details</p>
+              <h2>Runtime details</h2>
             </div>
-          {:else}
-            <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
-          {/if}
-        </Card>
+            <p>Current control status, available capabilities, and observation mode from the existing desktop commands.</p>
+          </div>
 
-        <Card title="Capabilities" subtitle="Feature flags derived from the current snapshot.">
-          {#if snapshot}
-            <ul class="capability-list">
-              {#each capabilities as capability}
-                <li>
-                  <span class="metric-label">{capability.label}</span>
-                  <StatusBadge
-                    label={capability.statusLabel}
-                    tone={booleanToColor(capability.value)}
-                  />
+          <div class="dashboard-section-grid">
+            <section class="detail-section">
+              <div class="detail-section-head">
+                <h3>ControlPort</h3>
+                <p>Configuration status and reachability.</p>
+              </div>
+
+              {#if snapshot}
+                <div class="metric-stack">
+                  <div class="metric">
+                    <span class="metric-label">Status</span>
+                    <StatusBadge
+                      label={formatControlPortValue(snapshot.control.port)}
+                      tone={controlAvailabilityToColor[snapshot.control.port]}
+                    />
+                  </div>
+
+                  <div class="metric">
+                    <span class="metric-label">Bootstrap observation</span>
+                    <StatusBadge
+                      label={formatControlPortValue(snapshot.control.bootstrap_observation)}
+                      tone={controlAvailabilityToColor[snapshot.control.bootstrap_observation]}
+                    />
+                  </div>
+
+                  <p class="supporting-text">{controlPortNote}</p>
+                </div>
+              {:else}
+                <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
+              {/if}
+            </section>
+
+            <section class="detail-section">
+              <div class="detail-section-head">
+                <h3>Capabilities</h3>
+                <p>Feature availability derived from the current snapshot.</p>
+              </div>
+
+              {#if snapshot}
+                <ul class="capability-list">
+                  {#each capabilities as capability}
+                    <li>
+                      <span class="metric-label">{capability.label}</span>
+                      <StatusBadge
+                        label={capability.statusLabel}
+                        tone={booleanToColor(capability.value)}
+                      />
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
+              {/if}
+            </section>
+
+            <section class="detail-section">
+              <div class="detail-section-head">
+                <h3>Observation</h3>
+                <p>Current source of bootstrap updates for the UI.</p>
+              </div>
+
+              {#if snapshot}
+                <div class="metric-stack">
+                  <div class="metric">
+                    <span class="metric-label">Bootstrap source</span>
+                    <StatusBadge
+                      label={formatBootstrapSource(snapshot)}
+                      tone={bootstrapSourceToColor(snapshot)}
+                    />
+                  </div>
+
+                  <div class="metric metric-copy-only">
+                    <span class="metric-label">Observation path</span>
+                    <span class="supporting-text">
+                      {snapshot.uses_control_bootstrap_observation
+                        ? 'Using ControlPort bootstrap observation.'
+                        : snapshot.control.bootstrap_observation === 'unconfigured'
+                          ? 'ControlPort bootstrap observation is not configured.'
+                          : snapshot.tor.status === 'starting' || snapshot.tor.status === 'running'
+                            ? 'ControlPort bootstrap observation is unavailable, so the desktop shell is falling back to Tor log output.'
+                            : 'Bootstrap observation will appear after Tor starts.'}
+                    </span>
+                  </div>
+                </div>
+              {:else}
+                <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
+              {/if}
+            </section>
+          </div>
+
+          {#if loadErrorMessage}
+            <section class="error-panel" aria-live="polite">
+              <h2>Backend state unavailable</h2>
+              <p>{loadErrorMessage}</p>
+            </section>
+          {/if}
+        </section>
+      </section>
+
+      <section class="app-section activity-panel" aria-label="Tor runtime activity">
+        <div class="section-heading">
+          <div class="section-heading-copy">
+            <p class="section-kicker">Activity</p>
+            <h2>Recent events</h2>
+          </div>
+          <p>Recent runtime events from the desktop backend.</p>
+        </div>
+
+        {#if activitySubscriptionError}
+          <p class="panel-note panel-note-error">{activitySubscriptionError}</p>
+        {/if}
+
+        <div class={`activity-feed ${activityEntries.length ? 'has-entries' : 'is-empty'}`}>
+          {#if activityEntries.length}
+            <ul class="activity-list">
+              {#each activityEntries as entry}
+                <li class={`activity-item tone-${entry.tone}`}>
+                  <span class="activity-marker" aria-hidden="true"></span>
+                  <div class="activity-copy">
+                    <div class="activity-headline">
+                      <strong class="activity-title">{entry.title}</strong>
+                      <time class="activity-time" datetime={new Date(entry.timestamp).toISOString()}>
+                        {formatActivityTime(entry.timestamp)}
+                      </time>
+                    </div>
+                    {#if entry.details}
+                      <p class="activity-details">{entry.details}</p>
+                    {/if}
+                  </div>
                 </li>
               {/each}
             </ul>
           {:else}
-            <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
+            <p class="empty-state activity-empty-state">{activityEmptyMessage}</p>
           {/if}
-        </Card>
-
-        <Card title="Runtime Mode" subtitle="Current source of bootstrap observation for the UI.">
-          {#if snapshot}
-            <div class="metric-stack">
-              <div class="metric">
-                <span class="metric-label">Bootstrap source</span>
-                <StatusBadge
-                  label={formatBootstrapSource(snapshot)}
-                  tone={bootstrapSourceToColor(snapshot)}
-                />
-              </div>
-
-              <div class="metric">
-                <span class="metric-label">Observation path</span>
-                <span class="supporting-text">
-                  {snapshot.uses_control_bootstrap_observation
-                    ? 'Using ControlPort bootstrap observation.'
-                    : snapshot.control.bootstrap_observation === 'unconfigured'
-                      ? 'ControlPort bootstrap observation is not configured.'
-                      : snapshot.tor.status === 'starting' || snapshot.tor.status === 'running'
-                        ? 'ControlPort bootstrap observation is unavailable, so the desktop shell is falling back to Tor log output.'
-                        : 'Bootstrap observation will appear after Tor starts.'}
-                </span>
-              </div>
-            </div>
-          {:else}
-            <p class="empty-state">{runtimeSnapshotEmptyMessage}</p>
-          {/if}
-        </Card>
-      </div>
-
-      {#if loadErrorMessage}
-        <section class="error-panel" aria-live="polite">
-          <h2>Backend state unavailable</h2>
-          <p>{loadErrorMessage}</p>
-        </section>
-      {/if}
-    </section>
-
-    <section class="panel-surface activity-panel" aria-label="Tor runtime activity">
-      <div class="section-heading">
-        <div class="section-heading-copy">
-          <p class="section-kicker">Activity</p>
-          <h2>Runtime stream</h2>
         </div>
-        <p>Recent runtime events from the desktop backend.</p>
-      </div>
-
-      {#if activitySubscriptionError}
-        <p class="panel-note panel-note-error">{activitySubscriptionError}</p>
-      {/if}
-
-      <div class={`activity-feed ${activityEntries.length ? 'has-entries' : 'is-empty'}`}>
-        {#if activityEntries.length}
-          <ul class="activity-list">
-            {#each activityEntries as entry}
-              <li class={`activity-item tone-${entry.tone}`}>
-                <span class="activity-marker" aria-hidden="true"></span>
-                <div class="activity-copy">
-                  <div class="activity-headline">
-                    <strong class="activity-title">{entry.title}</strong>
-                    <time class="activity-time" datetime={new Date(entry.timestamp).toISOString()}>
-                      {formatActivityTime(entry.timestamp)}
-                    </time>
-                  </div>
-                  {#if entry.details}
-                    <p class="activity-details">{entry.details}</p>
-                  {/if}
-                </div>
-              </li>
-            {/each}
-          </ul>
-        {:else}
-          <p class="empty-state activity-empty-state">{activityEmptyMessage}</p>
-        {/if}
-      </div>
-    </section>
+      </section>
+    </div>
   </div>
 
   <SettingsPanel

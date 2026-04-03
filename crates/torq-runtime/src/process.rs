@@ -87,6 +87,13 @@ async fn prepare_log_destination(log_mode: LogMode, log_path: &Path) -> Result<(
 
 fn build_command(config: &TorRuntimeConfig) -> Command {
     let mut command = Command::new(&config.tor_path);
+
+    if config.use_torrc {
+        if let Some(torrc_path) = &config.torrc_path {
+            command.arg("-f").arg(torrc_path);
+        }
+    }
+
     command.args(&config.args);
 
     if config.log_mode.is_managed() {
@@ -234,6 +241,23 @@ mod tests {
         assert!(managed_debug.contains("notice file managed.log"));
         assert!(!external_debug.contains("--Log"));
         assert!(!external_debug.contains("notice file external.log"));
+    }
+
+    #[test]
+    fn torrc_argument_is_only_added_when_enabled() {
+        let disabled = TorRuntimeConfig::new("tor.exe", "tor.log")
+            .with_torrc_path("C:/Tor/torrc")
+            .with_use_torrc(false);
+        let enabled = TorRuntimeConfig::new("tor.exe", "tor.log")
+            .with_torrc_path("C:/Tor/torrc")
+            .with_use_torrc(true);
+
+        let disabled_debug = format!("{:?}", build_command(&disabled).as_std());
+        let enabled_debug = format!("{:?}", build_command(&enabled).as_std());
+
+        assert!(!disabled_debug.contains("C:/Tor/torrc"));
+        assert!(enabled_debug.contains("-f"));
+        assert!(enabled_debug.contains("C:/Tor/torrc"));
     }
 
     async fn cleanup(path: &Path) {

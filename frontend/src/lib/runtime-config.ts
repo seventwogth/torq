@@ -21,6 +21,8 @@ export interface RuntimeConfigDto {
   tor_path: string;
   log_path: string;
   log_mode: RuntimeLogMode;
+  torrc_path: string | null;
+  use_torrc: boolean;
   args: string[];
   working_dir: string | null;
   control: RuntimeControlConfig | null;

@@ -111,6 +111,10 @@ pub struct RuntimeConfigDto {
     pub tor_path: String,
     pub log_path: String,
     pub log_mode: RuntimeLogMode,
+    #[serde(default)]
+    pub torrc_path: Option<String>,
+    #[serde(default)]
+    pub use_torrc: bool,
     pub args: Vec<String>,
     pub working_dir: Option<String>,
     pub control: Option<RuntimeControlConfig>,
@@ -127,6 +131,8 @@ impl RuntimeConfigDto {
             tor_path: path_to_string(&config.tor_path),
             log_path: path_to_string(&config.log_path),
             log_mode: RuntimeLogMode::from(config.log_mode),
+            torrc_path: config.torrc_path.as_ref().map(|path| path_to_string(path)),
+            use_torrc: config.use_torrc,
             args: config
                 .args
                 .iter()
@@ -146,6 +152,13 @@ impl RuntimeConfigDto {
             normalize_non_empty_path(working_dir.clone(), "working_dir")?;
         }
 
+        if self.use_torrc {
+            match self.torrc_path.as_ref().map(|value| value.trim()) {
+                Some(value) if !value.is_empty() => {}
+                _ => return Err(RuntimeConfigError::empty_field("torrc_path")),
+            }
+        }
+
         if let Some(control) = self.control.as_ref() {
             normalize_non_empty_path(control.host.clone(), "control.host")?;
             if let RuntimeControlAuth::Cookie { cookie_path } = &control.auth {
@@ -159,21 +172,39 @@ impl RuntimeConfigDto {
     pub fn try_into_runtime_config(self) -> Result<TorRuntimeConfig, RuntimeConfigError> {
         self.validate()?;
 
-        let mut config = TorRuntimeConfig::new(self.tor_path, self.log_path)
-            .with_log_mode(self.log_mode.into())
-            .with_args(self.args.into_iter().map(OsString::from));
+        let Self {
+            tor_path,
+            log_path,
+            log_mode,
+            torrc_path,
+            use_torrc,
+            args,
+            working_dir,
+            control,
+            stop_timeout_ms,
+            log_poll_interval_ms,
+        } = self;
 
-        if let Some(working_dir) = self.working_dir {
+        let mut config = TorRuntimeConfig::new(tor_path, log_path)
+            .with_log_mode(log_mode.into())
+            .with_use_torrc(use_torrc)
+            .with_args(args.into_iter().map(OsString::from));
+
+        if let Some(torrc_path) = normalize_optional_string(torrc_path) {
+            config = config.with_torrc_path(torrc_path);
+        }
+
+        if let Some(working_dir) = working_dir {
             config = config.with_working_dir(working_dir);
         }
 
-        if let Some(control) = self.control {
+        if let Some(control) = control {
             config = config.with_control(control.try_into()?);
         }
 
         config = config
-            .with_stop_timeout(Duration::from_millis(self.stop_timeout_ms))
-            .with_log_poll_interval(Duration::from_millis(self.log_poll_interval_ms));
+            .with_stop_timeout(Duration::from_millis(stop_timeout_ms))
+            .with_log_poll_interval(Duration::from_millis(log_poll_interval_ms));
 
         Ok(config)
     }
@@ -236,6 +267,13 @@ fn normalize_non_empty_path(
     Ok(value)
 }
 
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    })
+}
+
 fn path_to_string(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -261,6 +299,8 @@ mod tests {
     fn dto_round_trips_runtime_config_shape() {
         let runtime_config = TorRuntimeConfig::new("tor.exe", "tor.log")
             .with_log_mode(LogMode::External)
+            .with_torrc_path("C:/Tor/torrc")
+            .with_use_torrc(true)
             .with_args(["--foo", "--bar"])
             .with_working_dir("C:/Tor")
             .with_control(TorControlConfig::new(
@@ -276,6 +316,8 @@ mod tests {
         assert_eq!(dto.tor_path, "tor.exe");
         assert_eq!(dto.log_path, "tor.log");
         assert_eq!(dto.log_mode, RuntimeLogMode::External);
+        assert_eq!(dto.torrc_path.as_deref(), Some("C:/Tor/torrc"));
+        assert!(dto.use_torrc);
         assert_eq!(dto.args, vec!["--foo".to_string(), "--bar".to_string()]);
         assert_eq!(dto.working_dir.as_deref(), Some("C:/Tor"));
         assert_eq!(
@@ -294,6 +336,8 @@ mod tests {
         assert_eq!(rebuilt.tor_path, PathBuf::from("tor.exe"));
         assert_eq!(rebuilt.log_path, PathBuf::from("tor.log"));
         assert_eq!(rebuilt.log_mode, LogMode::External);
+        assert_eq!(rebuilt.torrc_path, Some(PathBuf::from("C:/Tor/torrc")));
+        assert!(rebuilt.use_torrc);
         assert_eq!(
             rebuilt.args,
             vec![
@@ -320,6 +364,8 @@ mod tests {
             tor_path: "   ".to_string(),
             log_path: "tor.log".to_string(),
             log_mode: RuntimeLogMode::Managed,
+            torrc_path: None,
+            use_torrc: false,
             args: vec![],
             working_dir: None,
             control: None,
@@ -338,6 +384,8 @@ mod tests {
             tor_path: "tor.exe".to_string(),
             log_path: "tor.log".to_string(),
             log_mode: RuntimeLogMode::Managed,
+            torrc_path: None,
+            use_torrc: false,
             args: vec![],
             working_dir: None,
             control: Some(RuntimeControlConfig {
@@ -357,6 +405,31 @@ mod tests {
             error,
             RuntimeConfigError::EmptyField {
                 field: "control.auth.cookie_path",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_missing_torrc_path_when_enabled() {
+        let dto = RuntimeConfigDto {
+            tor_path: "tor.exe".to_string(),
+            log_path: "tor.log".to_string(),
+            log_mode: RuntimeLogMode::Managed,
+            torrc_path: Some(" ".to_string()),
+            use_torrc: true,
+            args: vec![],
+            working_dir: None,
+            control: None,
+            stop_timeout_ms: 5_000,
+            log_poll_interval_ms: 250,
+        };
+
+        let error = dto.try_into_runtime_config().unwrap_err();
+
+        assert_eq!(
+            error,
+            RuntimeConfigError::EmptyField {
+                field: "torrc_path"
             }
         );
     }

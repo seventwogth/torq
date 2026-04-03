@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 use torq_core::{ControlAvailability, TorCommand, TorEvent, TorState};
 
 use crate::config::TorRuntimeConfig;
@@ -12,6 +12,7 @@ use crate::runtime_events::{RuntimeEventSender, RUNTIME_EVENT_QUEUE_CAPACITY};
 use crate::runtime_state::{TorRuntimeSnapshot, TorRuntimeSnapshotReducer};
 
 const CONTROL_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const AUX_TASK_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct TorManager {
     command_tx: mpsc::Sender<TorCommand>,
@@ -54,14 +55,29 @@ impl BootstrapObserver {
         }
     }
 
-    async fn stop(&mut self) {
+    fn begin_stop(&mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(true);
         }
+    }
 
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
+    async fn finish_stop(&mut self) {
+        if let Some(mut task) = self.task.take() {
+            match timeout(AUX_TASK_SHUTDOWN_TIMEOUT, &mut task).await {
+                Ok(join_result) => {
+                    let _ = join_result;
+                }
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                }
+            }
         }
+    }
+
+    async fn stop(&mut self) {
+        self.begin_stop();
+        self.finish_stop().await;
     }
 }
 
@@ -224,9 +240,14 @@ async fn run_supervisor(
                 SupervisorAction::ProcessExited(wait_result) => {
                     if let Some(mut active_session) = session.take() {
                         if let Some(observer) = active_session.bootstrap_observer.as_mut() {
-                            observer.stop().await;
+                            observer.begin_stop();
                         }
-                        active_session.logs.stop().await;
+                        active_session.logs.begin_stop();
+
+                        if let Some(observer) = active_session.bootstrap_observer.as_mut() {
+                            observer.finish_stop().await;
+                        }
+                        active_session.logs.finish_stop().await;
                     }
 
                     publish_exit_event(wait_result, &runtime_event_tx).await;
@@ -444,11 +465,18 @@ async fn stop_session(
     emit_stopped: bool,
 ) -> Result<()> {
     if let Some(observer) = session.bootstrap_observer.as_mut() {
-        observer.stop().await;
+        observer.begin_stop();
     }
 
-    session.process.stop(config.stop_timeout).await?;
-    session.logs.stop().await;
+    session.logs.begin_stop();
+    let stop_result = session.process.stop(config.stop_timeout).await;
+
+    if let Some(observer) = session.bootstrap_observer.as_mut() {
+        observer.finish_stop().await;
+    }
+    session.logs.finish_stop().await;
+
+    stop_result?;
 
     if emit_stopped {
         emit_event(runtime_event_tx, TorEvent::Stopped).await;
@@ -643,7 +671,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::broadcast;
-    use tokio::time::timeout;
+    use tokio::time::{sleep, timeout};
     use torq_core::{ControlAvailability, TorEvent};
 
     use super::TorManager;
@@ -686,6 +714,8 @@ mod tests {
 
         let next_log_path = unique_test_path("config-stopped-next.log");
         let next_config = TorRuntimeConfig::new("tor.exe", &next_log_path)
+            .with_torrc_path("C:/Tor/torrc")
+            .with_use_torrc(true)
             .with_stop_timeout(Duration::from_secs(2))
             .with_log_poll_interval(Duration::from_millis(100));
 
@@ -698,6 +728,8 @@ mod tests {
         assert_eq!(current.tor_path, next_config.tor_path);
         assert_eq!(current.log_path, next_config.log_path);
         assert_eq!(current.log_mode, next_config.log_mode);
+        assert_eq!(current.torrc_path, next_config.torrc_path);
+        assert_eq!(current.use_torrc, next_config.use_torrc);
         assert_eq!(current.args, next_config.args);
         assert_eq!(current.working_dir, next_config.working_dir);
         assert_eq!(current.control, next_config.control);
@@ -1081,6 +1113,42 @@ mod tests {
 
         manager.stop().await.unwrap();
         let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
+        cleanup(&log_path).await;
+    }
+
+    #[tokio::test]
+    async fn stop_completes_even_when_control_observer_is_stuck() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            sleep(Duration::from_secs(30)).await;
+        });
+
+        let log_path = unique_test_path("control-bootstrap-stuck.log");
+        let control = TorControlConfig::new(
+            address.ip().to_string(),
+            address.port(),
+            TorControlAuth::Null,
+        );
+        let config = TorRuntimeConfig::new("powershell.exe", &log_path)
+            .with_args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
+            .with_log_mode(LogMode::External)
+            .with_control(control)
+            .with_stop_timeout(Duration::from_millis(750));
+        let manager = TorManager::new(config).await.unwrap();
+        let mut events = manager.subscribe_events();
+
+        manager.start().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Started).await;
+
+        timeout(Duration::from_secs(5), manager.stop())
+            .await
+            .expect("stop should complete even if the control observer is hung")
+            .unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
+
+        server.abort();
         cleanup(&log_path).await;
     }
 

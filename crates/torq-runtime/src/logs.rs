@@ -37,16 +37,23 @@ impl LogTail {
         })
     }
 
-    pub(crate) async fn stop(&mut self) {
+    pub(crate) fn begin_stop(&mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             // Stop is cooperative so the tailer can do one final pass, drain any
             // buffered bytes, and emit a trailing line that never received '\n'.
             let _ = shutdown_tx.send(true);
         }
+    }
 
+    pub(crate) async fn finish_stop(&mut self) {
         if let Some(task) = self.task.take() {
             let _ = task.await;
         }
+    }
+
+    pub(crate) async fn stop(&mut self) {
+        self.begin_stop();
+        self.finish_stop().await;
     }
 }
 

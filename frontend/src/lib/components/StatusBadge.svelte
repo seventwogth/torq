@@ -13,25 +13,24 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 22px;
-    padding: 0 9px;
-    border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--tone) 10%, var(--color-border));
-    background: color-mix(in srgb, var(--tone) 3%, var(--color-surface));
-    color: color-mix(in srgb, var(--tone) 68%, var(--color-text-secondary));
-    font-family: var(--font-ui, 'Manrope', 'Segoe UI', sans-serif);
-    font-size: 0.7rem;
+    min-height: 18px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--tone);
+    font-family: var(--font-ui, 'Segoe UI', system-ui, sans-serif);
+    font-size: 0.75rem;
     font-weight: 500;
-    line-height: 1;
-    letter-spacing: 0.02em;
+    line-height: 1.2;
     white-space: nowrap;
   }
 
   .dot {
-    width: 4px;
-    height: 4px;
+    width: 6px;
+    height: 6px;
     border-radius: 999px;
     background: currentColor;
+    opacity: 0.9;
   }
 
   .tone-success {

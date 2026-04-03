@@ -10,6 +10,8 @@ export interface RuntimeConfigFormState {
   torPath: string;
   logPath: string;
   logMode: RuntimeLogMode;
+  torrcPath: string;
+  useTorrc: boolean;
   workingDir: string;
   controlEnabled: boolean;
   controlHost: string;
@@ -21,6 +23,7 @@ export interface RuntimeConfigFormState {
 export interface RuntimeConfigFormErrors {
   torPath?: string;
   logPath?: string;
+  torrcPath?: string;
   workingDir?: string;
   controlHost?: string;
   controlPort?: string;
@@ -34,6 +37,8 @@ export function createRuntimeConfigFormState(config: RuntimeConfigDto): RuntimeC
     torPath: config.tor_path,
     logPath: config.log_path,
     logMode: config.log_mode,
+    torrcPath: config.torrc_path ?? '',
+    useTorrc: config.use_torrc,
     workingDir: config.working_dir ?? '',
     controlEnabled: config.control !== null,
     controlHost: config.control?.host ?? '',
@@ -52,6 +57,10 @@ export function validateRuntimeConfigForm(form: RuntimeConfigFormState): Runtime
 
   if (!isNonEmpty(form.logPath)) {
     errors.logPath = 'Log path is required.';
+  }
+
+  if (form.useTorrc && !isNonEmpty(form.torrcPath)) {
+    errors.torrcPath = 'torrc path is required when torrc usage is enabled.';
   }
 
   if (form.controlEnabled) {
@@ -97,6 +106,8 @@ export function buildRuntimeConfigRequest(
     tor_path: form.torPath.trim(),
     log_path: form.logPath.trim(),
     log_mode: form.logMode,
+    torrc_path: normalizeOptionalString(form.torrcPath),
+    use_torrc: form.useTorrc,
     args: [...current.args],
     working_dir: normalizeOptionalString(form.workingDir),
     control,

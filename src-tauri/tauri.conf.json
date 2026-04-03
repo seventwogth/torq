@@ -14,8 +14,11 @@
       {
         "label": "main",
         "title": "torq",
-        "width": 1024,
-        "height": 768
+        "decorations": false,
+        "width": 1180,
+        "height": 768,
+        "minWidth": 1180,
+        "minHeight": 720
       }
     ],
     "security": {

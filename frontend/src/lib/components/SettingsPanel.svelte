@@ -17,6 +17,8 @@
     tor_path: '',
     log_path: '',
     log_mode: 'managed',
+    torrc_path: null,
+    use_torrc: false,
     args: [],
     working_dir: null,
     control: null,
@@ -283,6 +285,20 @@
               </label>
 
               <label class="field">
+                <span class="field-label">torrc path</span>
+                <input
+                  type="text"
+                  class="field-input"
+                  bind:value={draft.torrcPath}
+                  disabled={formDisabled}
+                  placeholder="Optional"
+                />
+                {#if submitAttempted && fieldErrors.torrcPath}
+                  <span class="field-error">{fieldErrors.torrcPath}</span>
+                {/if}
+              </label>
+
+              <label class="field">
                 <span class="field-label">Working dir</span>
                 <input
                   type="text"
@@ -292,6 +308,17 @@
                   placeholder="Optional"
                 />
               </label>
+            </div>
+
+            <div class="control-toggle-row">
+              <label class="toggle">
+                <input type="checkbox" bind:checked={draft.useTorrc} disabled={formDisabled} />
+                <span>Use torrc on startup</span>
+              </label>
+              <StatusBadge
+                label={draft.useTorrc ? 'Enabled' : 'Disabled'}
+                tone={draft.useTorrc ? 'muted' : 'neutral'}
+              />
             </div>
 
             <div class="settings-divider" aria-hidden="true"></div>
@@ -422,21 +449,19 @@
     z-index: 30;
     display: grid;
     justify-items: end;
-    background: color-mix(in srgb, var(--color-bg) 62%, transparent);
-    backdrop-filter: blur(8px);
+    background: color-mix(in srgb, var(--color-bg) 82%, transparent);
   }
 
   .settings-panel {
     width: min(100%, 680px);
     height: 100%;
     overflow: auto;
-    border-left: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
-    background: color-mix(in srgb, var(--color-surface) 97%, var(--color-surface-elevated));
-    padding: 20px;
+    border-left: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+    background: var(--color-bg);
+    padding: 24px;
     display: grid;
-    gap: 16px;
+    gap: 18px;
     align-content: start;
-    box-shadow: inset 1px 0 0 color-mix(in srgb, white 2%, transparent);
   }
 
   .settings-header {
@@ -444,8 +469,7 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 16px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+    padding-bottom: 14px;
   }
 
   .settings-title-block {
@@ -455,18 +479,16 @@
   }
 
   .eyebrow {
-    color: color-mix(in srgb, var(--color-primary) 72%, var(--color-text-secondary));
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    font-size: 0.72rem;
-    font-weight: 600;
+    color: var(--color-text-muted);
+    font-size: 0.75rem;
+    font-weight: 500;
   }
 
   h2 {
     margin: 0;
-    font-size: clamp(1.1rem, 1.8vw, 1.35rem);
+    font-size: clamp(1.05rem, 1.8vw, 1.25rem);
     line-height: 1.1;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
     font-weight: 600;
   }
 
@@ -493,9 +515,9 @@
   .close-button,
   .action-button {
     border: 1px solid color-mix(in srgb, var(--color-border) 92%, transparent);
-    border-radius: var(--radius-md, 10px);
+    border-radius: 6px;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition:
       background-color 120ms ease,
@@ -513,7 +535,7 @@
   .close-button {
     min-height: 32px;
     padding: 0 12px;
-    background: color-mix(in srgb, var(--color-surface-elevated) 18%, var(--color-surface));
+    background: transparent;
     color: var(--color-text-secondary);
     font-size: 0.78rem;
   }
@@ -549,7 +571,7 @@
   .settings-section {
     display: grid;
     gap: 12px;
-    padding: 12px 0 0;
+    padding: 8px 0 0;
   }
 
   .settings-section-header {
@@ -575,18 +597,21 @@
 
   .settings-divider {
     height: 1px;
-    background: color-mix(in srgb, var(--color-border) 76%, transparent);
+    background: color-mix(in srgb, var(--color-border) 56%, transparent);
   }
 
   .field-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px 16px;
+    align-items: start;
   }
 
   .field {
     display: grid;
     gap: 6px;
+    width: 100%;
+    max-width: 100%;
     min-width: 0;
   }
 
@@ -598,11 +623,16 @@
   }
 
   .field-input {
+    inline-size: 100%;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    display: block;
     min-height: 34px;
     box-sizing: border-box;
-    border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
     border-radius: 6px;
-    background: color-mix(in srgb, var(--color-surface-elevated) 12%, var(--color-surface));
+    background: var(--color-surface);
     color: var(--color-text-primary);
     padding: 0 12px;
     font: inherit;
@@ -672,15 +702,14 @@
     display: flex;
     justify-content: flex-end;
     gap: 12px;
-    padding-top: 12px;
-    border-top: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+    padding-top: 6px;
   }
 
   .action-button {
     min-height: 34px;
     padding: 0 14px;
     color: var(--color-text-primary);
-    background: color-mix(in srgb, var(--color-surface-elevated) 20%, var(--color-surface));
+    background: transparent;
     font-size: 0.8rem;
   }
 
@@ -693,15 +722,15 @@
   }
 
   .action-button.action-button-primary.primary {
-    border-color: color-mix(in srgb, var(--color-primary) 30%, var(--color-border));
-    background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface));
+    border-color: color-mix(in srgb, var(--color-primary) 24%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   }
 
   .inline-message,
   .empty-panel-state {
     padding: 0 0 0 12px;
     border: 0;
-    border-left: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+    border-left: 1px solid color-mix(in srgb, var(--color-border) 64%, transparent);
     background: transparent;
     color: var(--color-text-secondary);
     line-height: 1.5;
@@ -746,7 +775,7 @@
       height: auto;
       border-left: 0;
       border-top: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
-      border-radius: 14px 14px 0 0;
+      border-radius: 0;
       padding: 20px;
     }
 

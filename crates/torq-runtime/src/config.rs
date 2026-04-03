@@ -32,6 +32,8 @@ pub struct TorRuntimeConfig {
     pub tor_path: PathBuf,
     pub log_path: PathBuf,
     pub log_mode: LogMode,
+    pub torrc_path: Option<PathBuf>,
+    pub use_torrc: bool,
     pub args: Vec<OsString>,
     pub working_dir: Option<PathBuf>,
     pub control: Option<TorControlConfig>,
@@ -45,6 +47,8 @@ impl TorRuntimeConfig {
             tor_path: tor_path.into(),
             log_path: log_path.into(),
             log_mode: LogMode::Managed,
+            torrc_path: None,
+            use_torrc: false,
             args: Vec::new(),
             working_dir: None,
             control: None,
@@ -70,6 +74,16 @@ impl TorRuntimeConfig {
 
     pub fn with_log_mode(mut self, log_mode: LogMode) -> Self {
         self.log_mode = log_mode;
+        self
+    }
+
+    pub fn with_torrc_path(mut self, torrc_path: impl Into<PathBuf>) -> Self {
+        self.torrc_path = Some(torrc_path.into());
+        self
+    }
+
+    pub fn with_use_torrc(mut self, use_torrc: bool) -> Self {
+        self.use_torrc = use_torrc;
         self
     }
 
