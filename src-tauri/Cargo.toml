@@ -7,6 +7,7 @@ default-run = "torq-desktop"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2", features = [] }
 tokio = { version = "1", features = ["sync"] }
 torq-core = { path = "../crates/torq-core" }

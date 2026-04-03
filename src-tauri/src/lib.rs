@@ -1,12 +1,21 @@
+mod config_store;
+mod runtime_config;
+
 use std::env;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use torq_core::{ControlAvailability, RuntimeStatus, TorEvent, TorState};
 use torq_runtime::{TorManager, TorRuntimeSnapshot};
+
+use crate::config_store::RuntimeConfigStore;
+use crate::runtime_config::{
+    get_runtime_config_response, set_runtime_config_request, RuntimeConfigRequest,
+    RuntimeConfigResponse,
+};
 
 const TOR_STATE_EVENT: &str = "tor://state";
 const TOR_RUNTIME_SNAPSHOT_EVENT: &str = "tor://runtime-snapshot";
@@ -19,16 +28,74 @@ const TOR_RUNTIME_ACTIVITY_EVENT: &str = "tor://activity";
 /// reconstructing supervisors or control clients per request.
 pub struct AppState {
     manager: Option<TorManager>,
+    config_store: Option<RuntimeConfigStore>,
     init_error: Option<String>,
+    command_lock: Mutex<()>,
 }
 
 impl AppState {
     fn manager(&self) -> Result<&TorManager, String> {
-        self.manager.as_ref().ok_or_else(|| {
-            self.init_error
-                .clone()
-                .unwrap_or_else(|| "desktop backend is unavailable".to_string())
-        })
+        self.manager
+            .as_ref()
+            .ok_or_else(|| self.backend_error("desktop backend is unavailable"))
+    }
+
+    fn config_store(&self) -> Result<&RuntimeConfigStore, String> {
+        self.config_store
+            .as_ref()
+            .ok_or_else(|| self.backend_error("runtime config store is unavailable"))
+    }
+
+    fn backend_error(&self, fallback: &str) -> String {
+        self.init_error
+            .clone()
+            .unwrap_or_else(|| fallback.to_string())
+    }
+}
+
+fn user_config_root() -> Option<PathBuf> {
+    env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+}
+
+fn runtime_config_path() -> PathBuf {
+    if let Some(root) = user_config_root() {
+        return root.join("torq").join("torq.config.json");
+    }
+
+    env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("torq.config.json")
+}
+
+fn build_config_store() -> Result<RuntimeConfigStore, String> {
+    RuntimeConfigStore::new(runtime_config_path(), default_runtime_config()).map_err(|error| {
+        format_backend_init_error(&format!("failed to load runtime config. {error}"))
+    })
+}
+
+async fn build_manager(config_store: &RuntimeConfigStore) -> Result<TorManager, String> {
+    let config = config_store.load().map_err(|error| {
+        format_backend_init_error(&format!("failed to load runtime config. {error}"))
+    })?;
+
+    TorManager::new(config)
+        .await
+        .map_err(|error| format_backend_init_error(&error.to_string()))
+}
+
+fn new_app_state(
+    manager: Option<TorManager>,
+    config_store: Option<RuntimeConfigStore>,
+    init_error: Option<String>,
+) -> AppState {
+    AppState {
+        manager,
+        config_store,
+        init_error,
+        command_lock: Mutex::new(()),
     }
 }
 
@@ -309,9 +376,9 @@ fn runtime_activity_from_event(event: &TorEvent, id: u64) -> Option<TorRuntimeAc
 }
 
 fn default_runtime_config() -> torq_runtime::TorRuntimeConfig {
-    // The first desktop shell only needs a stable manager bootstrap path.
-    // Process launch controls stay out of the UI for now, so startup mirrors the
-    // CLI defaults and can be overridden by environment variables when needed.
+    // This is only a bootstrap fallback for first launch or a missing config
+    // file. Runtime now receives its active config from the store instead of
+    // constructing it internally.
     let tor_path = env::var_os("TORQ_TOR_EXE")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("tor.exe"));
@@ -327,15 +394,14 @@ fn format_backend_init_error(error: &str) -> String {
 }
 
 async fn build_state() -> AppState {
-    match TorManager::new(default_runtime_config()).await {
-        Ok(manager) => AppState {
-            manager: Some(manager),
-            init_error: None,
-        },
-        Err(error) => AppState {
-            manager: None,
-            init_error: Some(format_backend_init_error(&error.to_string())),
-        },
+    let config_store = match build_config_store() {
+        Ok(config_store) => config_store,
+        Err(error) => return new_app_state(None, None, Some(error)),
+    };
+
+    match build_manager(&config_store).await {
+        Ok(manager) => new_app_state(Some(manager), Some(config_store), None),
+        Err(error) => new_app_state(None, Some(config_store), Some(error)),
     }
 }
 
@@ -352,30 +418,80 @@ fn tor_runtime_snapshot(state: State<'_, AppState>) -> Result<TorRuntimeSnapshot
 }
 
 #[tauri::command]
+fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeConfigResponse, String> {
+    let config = state
+        .config_store()?
+        .get()
+        .map_err(|error| error.to_string())?;
+    Ok(get_runtime_config_response(&config))
+}
+
+#[tauri::command]
 async fn tor_start(state: State<'_, AppState>) -> Result<(), String> {
+    let _guard = state.command_lock.lock().await;
     let manager = state.manager()?;
     manager.start().await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn tor_stop(state: State<'_, AppState>) -> Result<(), String> {
+    let _guard = state.command_lock.lock().await;
     let manager = state.manager()?;
     manager.stop().await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn tor_restart(state: State<'_, AppState>) -> Result<(), String> {
+    let _guard = state.command_lock.lock().await;
     let manager = state.manager()?;
     manager.restart().await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn tor_new_identity(state: State<'_, AppState>) -> Result<(), String> {
+    let _guard = state.command_lock.lock().await;
     let manager = state.manager()?;
     manager
         .new_identity()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_runtime_config(
+    state: State<'_, AppState>,
+    config: RuntimeConfigRequest,
+) -> Result<RuntimeConfigResponse, String> {
+    let _guard = state.command_lock.lock().await;
+    let manager = state.manager()?;
+    let config_store = state.config_store()?;
+    let previous_config = config_store.get().map_err(|error| error.to_string())?;
+    let next_config = set_runtime_config_request(config).map_err(|error| error.to_string())?;
+
+    manager
+        .set_runtime_config(next_config.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+
+    if let Err(error) = config_store.save(next_config.clone()) {
+        let rollback_result = manager.set_runtime_config(previous_config.clone()).await;
+        if rollback_result.is_ok() {
+            let _ = config_store.set(previous_config);
+        }
+
+        return Err(match rollback_result {
+            Ok(_) => format!("failed to persist runtime config. {error}"),
+            Err(rollback_error) => format!(
+                "failed to persist runtime config. {error}. runtime rollback also failed: {rollback_error}"
+            ),
+        });
+    }
+
+    config_store
+        .set(next_config.clone())
+        .map_err(|error| error.to_string())?;
+
+    Ok(get_runtime_config_response(&next_config))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -450,6 +566,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             tor_state,
             tor_runtime_snapshot,
+            get_runtime_config,
+            set_runtime_config,
             tor_start,
             tor_stop,
             tor_restart,

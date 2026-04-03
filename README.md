@@ -32,6 +32,17 @@ Useful environment variables:
 Tauri config lives in [src-tauri/tauri.conf.json](/C:/Users/stargazer/github/torq/src-tauri/tauri.conf.json).
 Frontend sources live in [frontend](/C:/Users/stargazer/github/torq/frontend).
 
+## Runtime config
+
+The desktop backend stores runtime configuration as JSON in `torq.config.json`.
+By default it uses a user-level config path such as `%APPDATA%\torq\torq.config.json` on Windows, with a current-directory fallback if no user config root is available.
+
+On startup the backend loads config from that file into a small in-memory config store.
+If the file is missing, it falls back to the bootstrap defaults from `TORQ_TOR_EXE` / `TORQ_TOR_LOG` (or `tor.exe` / `tor.log` when those env vars are unset).
+
+Configuration updates are persisted through the backend API and are only accepted while Tor is not active.
+If runtime is in `Starting` or `Running`, `set_runtime_config` is rejected instead of hot-reloading the process.
+
 ## Runtime CLI smoke test
 
 Run the CLI example from the workspace root:

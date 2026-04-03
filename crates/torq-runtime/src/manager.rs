@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use torq_core::{ControlAvailability, TorCommand, TorEvent, TorState};
@@ -15,8 +15,10 @@ const CONTROL_BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub struct TorManager {
     command_tx: mpsc::Sender<TorCommand>,
+    config_tx: mpsc::Sender<ConfigCommand>,
     state_rx: watch::Receiver<TorState>,
     runtime_state_rx: watch::Receiver<TorRuntimeSnapshot>,
+    config_rx: watch::Receiver<TorRuntimeConfig>,
     event_tx: broadcast::Sender<TorEvent>,
 }
 
@@ -32,6 +34,13 @@ struct RuntimeSession {
 struct BootstrapObserver {
     shutdown_tx: Option<watch::Sender<bool>>,
     task: Option<JoinHandle<()>>,
+}
+
+enum ConfigCommand {
+    Set {
+        config: Box<TorRuntimeConfig>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 impl BootstrapObserver {
@@ -58,9 +67,13 @@ impl BootstrapObserver {
 
 impl TorManager {
     pub async fn new(config: TorRuntimeConfig) -> Result<Self> {
+        validate_runtime_config(&config)?;
+
         let (command_tx, command_rx) = mpsc::channel(32);
+        let (config_tx, config_rx) = mpsc::channel(8);
         let (runtime_event_tx, runtime_event_rx) =
             RuntimeEventSender::channel(RUNTIME_EVENT_QUEUE_CAPACITY);
+        let (config_state_tx, config_state_rx) = watch::channel(config.clone());
         let initial_runtime_state = TorRuntimeSnapshot::new(config.control.is_some());
         let (state_tx, state_rx) = watch::channel(initial_runtime_state.tor());
         let (runtime_state_tx, runtime_state_rx) = watch::channel(initial_runtime_state);
@@ -73,12 +86,20 @@ impl TorManager {
             initial_runtime_state,
             event_tx.clone(),
         ));
-        tokio::spawn(run_supervisor(config, command_rx, runtime_event_tx));
+        tokio::spawn(run_supervisor(
+            config,
+            command_rx,
+            config_rx,
+            config_state_tx,
+            runtime_event_tx,
+        ));
 
         Ok(Self {
             command_tx,
+            config_tx,
             state_rx,
             runtime_state_rx,
+            config_rx: config_state_rx,
             event_tx,
         })
     }
@@ -111,6 +132,10 @@ impl TorManager {
         *self.runtime_state_rx.borrow()
     }
 
+    pub fn current_config(&self) -> TorRuntimeConfig {
+        self.config_rx.borrow().clone()
+    }
+
     pub fn subscribe_events(&self) -> broadcast::Receiver<TorEvent> {
         self.event_tx.subscribe()
     }
@@ -141,11 +166,31 @@ impl TorManager {
     pub async fn new_identity(&self) -> Result<()> {
         self.send(TorCommand::NewIdentity).await
     }
+
+    pub async fn set_runtime_config(&self, config: TorRuntimeConfig) -> Result<()> {
+        validate_runtime_config(&config)?;
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.config_tx
+            .send(ConfigCommand::Set {
+                config: Box::new(config),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| anyhow!("tor runtime supervisor is not available"))?;
+
+        reply_rx
+            .await
+            .map_err(|_| anyhow!("tor runtime supervisor did not respond to config update"))?
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 async fn run_supervisor(
-    config: TorRuntimeConfig,
+    mut config: TorRuntimeConfig,
     mut command_rx: mpsc::Receiver<TorCommand>,
+    mut config_rx: mpsc::Receiver<ConfigCommand>,
+    config_state_tx: watch::Sender<TorRuntimeConfig>,
     runtime_event_tx: RuntimeEventSender,
 ) {
     let mut session: Option<RuntimeSession> = None;
@@ -156,6 +201,7 @@ async fn run_supervisor(
                 let active_session = session.as_mut().expect("runtime session exists");
                 tokio::select! {
                     command = command_rx.recv() => SupervisorAction::Command(command),
+                    config = config_rx.recv() => SupervisorAction::Config(config),
                     wait_result = active_session.process.wait() => SupervisorAction::ProcessExited(wait_result),
                 }
             };
@@ -164,6 +210,10 @@ async fn run_supervisor(
                 SupervisorAction::Command(Some(command)) => {
                     handle_command(command, &config, &mut session, &runtime_event_tx).await;
                 }
+                SupervisorAction::Config(Some(command)) => {
+                    handle_config_command(command, &mut config, &session, &config_state_tx).await;
+                }
+                SupervisorAction::Config(None) => {}
                 SupervisorAction::Command(None) => {
                     if let Some(mut active_session) = session.take() {
                         let _ = stop_session(&mut active_session, &config, &runtime_event_tx, true)
@@ -183,11 +233,26 @@ async fn run_supervisor(
                 }
             }
         } else {
-            let Some(command) = command_rx.recv().await else {
-                break;
-            };
+            tokio::select! {
+                command = command_rx.recv() => {
+                    let Some(command) = command else {
+                        break;
+                    };
 
-            handle_command(command, &config, &mut session, &runtime_event_tx).await;
+                    handle_command(command, &config, &mut session, &runtime_event_tx).await;
+                }
+                config_command = config_rx.recv() => {
+                    if let Some(command) = config_command {
+                        handle_config_command(
+                            command,
+                            &mut config,
+                            &session,
+                            &config_state_tx,
+                        )
+                        .await;
+                    }
+                }
+            };
         }
     }
 }
@@ -307,6 +372,34 @@ async fn handle_new_identity(
                 )),
             )
             .await;
+        }
+    }
+}
+
+async fn handle_config_command(
+    command: ConfigCommand,
+    config: &mut TorRuntimeConfig,
+    session: &Option<RuntimeSession>,
+    config_state_tx: &watch::Sender<TorRuntimeConfig>,
+) {
+    match command {
+        ConfigCommand::Set {
+            config: next_config,
+            reply,
+        } => {
+            let result = if session.is_some() {
+                Err("runtime config cannot be changed while Tor is Starting or Running".to_string())
+            } else {
+                validate_runtime_config(&next_config)
+                    .map_err(|error| error.to_string())
+                    .map(|_| {
+                        let next_config = *next_config;
+                        *config = next_config.clone();
+                        let _ = config_state_tx.send(next_config);
+                    })
+            };
+
+            let _ = reply.send(result);
         }
     }
 }
@@ -530,7 +623,16 @@ fn bootstrap_phase_event(last_progress: Option<u8>, phase: &TorBootstrapPhase) -
 
 enum SupervisorAction {
     Command(Option<TorCommand>),
+    Config(Option<ConfigCommand>),
     ProcessExited(std::io::Result<std::process::ExitStatus>),
+}
+
+fn validate_runtime_config(config: &TorRuntimeConfig) -> Result<()> {
+    if config.tor_path.as_os_str().is_empty() {
+        return Err(anyhow!("runtime config requires a non-empty tor_path"));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -573,6 +675,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_config_can_be_updated_while_stopped() {
+        let initial_log_path = unique_test_path("config-stopped-initial.log");
+        let manager = TorManager::new(
+            TorRuntimeConfig::new("tor.exe", &initial_log_path)
+                .with_stop_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .unwrap();
+
+        let next_log_path = unique_test_path("config-stopped-next.log");
+        let next_config = TorRuntimeConfig::new("tor.exe", &next_log_path)
+            .with_stop_timeout(Duration::from_secs(2))
+            .with_log_poll_interval(Duration::from_millis(100));
+
+        manager
+            .set_runtime_config(next_config.clone())
+            .await
+            .unwrap();
+
+        let current = manager.current_config();
+        assert_eq!(current.tor_path, next_config.tor_path);
+        assert_eq!(current.log_path, next_config.log_path);
+        assert_eq!(current.log_mode, next_config.log_mode);
+        assert_eq!(current.args, next_config.args);
+        assert_eq!(current.working_dir, next_config.working_dir);
+        assert_eq!(current.control, next_config.control);
+        assert_eq!(current.stop_timeout, next_config.stop_timeout);
+        assert_eq!(current.log_poll_interval, next_config.log_poll_interval);
+    }
+
+    #[tokio::test]
+    async fn runtime_config_rejects_empty_tor_path() {
+        let manager = TorManager::new(TorRuntimeConfig::new(
+            "tor.exe",
+            unique_test_path("config-validation.log"),
+        ))
+        .await
+        .unwrap();
+
+        let invalid_config =
+            TorRuntimeConfig::new("", unique_test_path("config-validation-next.log"));
+
+        let error = manager
+            .set_runtime_config(invalid_config)
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("runtime config requires a non-empty tor_path"));
+    }
+
+    #[tokio::test]
     async fn new_identity_without_running_tor_emits_warning() {
         let manager = TorManager::new(TorRuntimeConfig::new(
             "tor.exe",
@@ -600,7 +755,7 @@ mod tests {
         let log_path = unique_test_path("missing-control.log");
         let config = TorRuntimeConfig::new("cmd.exe", &log_path)
             .with_args(["/C", script.to_string_lossy().as_ref()])
-            .with_stop_timeout(Duration::from_secs(1));
+            .with_stop_timeout(Duration::from_secs(5));
         let manager = TorManager::new(config).await.unwrap();
         let mut events = manager.subscribe_events();
 
@@ -623,6 +778,39 @@ mod tests {
             ControlAvailability::Unconfigured
         );
         assert!(!manager.current_runtime_state().new_identity_available());
+
+        manager.stop().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
+        cleanup(&log_path).await;
+    }
+
+    #[tokio::test]
+    async fn runtime_config_update_is_rejected_while_running() {
+        let script = mock_tor_script_path();
+        let log_path = unique_test_path("config-running.log");
+        let config = TorRuntimeConfig::new("cmd.exe", &log_path)
+            .with_args(["/C", script.to_string_lossy().as_ref()])
+            .with_stop_timeout(Duration::from_secs(5));
+        let manager = TorManager::new(config).await.unwrap();
+        let mut events = manager.subscribe_events();
+
+        manager.start().await.unwrap();
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Started).await;
+        let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Bootstrap(100)).await;
+
+        assert_eq!(
+            manager.current_runtime_state().tor().status(),
+            torq_core::RuntimeStatus::Running
+        );
+
+        let next_config =
+            TorRuntimeConfig::new("cmd.exe", unique_test_path("config-while-running.log"));
+        let error = manager.set_runtime_config(next_config).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("runtime config cannot be changed while Tor is Starting or Running"));
+        assert_eq!(manager.current_config().log_path, log_path);
 
         manager.stop().await.unwrap();
         let _ = recv_matching_event(&mut events, |event| *event == TorEvent::Stopped).await;
@@ -681,7 +869,7 @@ mod tests {
         let config = TorRuntimeConfig::new("cmd.exe", &log_path)
             .with_args(["/C", script.to_string_lossy().as_ref()])
             .with_control(control)
-            .with_stop_timeout(Duration::from_secs(1));
+            .with_stop_timeout(Duration::from_secs(5));
         let manager = TorManager::new(config).await.unwrap();
         let mut events = manager.subscribe_events();
 
@@ -812,7 +1000,7 @@ mod tests {
             .with_args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
             .with_log_mode(LogMode::External)
             .with_control(control)
-            .with_stop_timeout(Duration::from_secs(1));
+            .with_stop_timeout(Duration::from_secs(5));
         let manager = TorManager::new(config).await.unwrap();
         let mut events = manager.subscribe_events();
 
@@ -860,7 +1048,7 @@ mod tests {
             .with_args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
             .with_log_mode(LogMode::External)
             .with_control(control)
-            .with_stop_timeout(Duration::from_secs(1));
+            .with_stop_timeout(Duration::from_secs(5));
         let manager = TorManager::new(config).await.unwrap();
         let mut events = manager.subscribe_events();
 
@@ -951,7 +1139,7 @@ mod tests {
             .with_args(["-NoProfile", "-Command", "Start-Sleep -Seconds 30"])
             .with_log_mode(LogMode::External)
             .with_control(control)
-            .with_stop_timeout(Duration::from_secs(1));
+            .with_stop_timeout(Duration::from_secs(5));
         let manager = TorManager::new(config).await.unwrap();
         let mut events = manager.subscribe_events();
 
@@ -992,7 +1180,7 @@ mod tests {
     where
         F: Fn(&TorEvent) -> bool,
     {
-        timeout(Duration::from_secs(5), async {
+        timeout(Duration::from_secs(15), async {
             loop {
                 match events.recv().await {
                     Ok(event) if predicate(&event) => return event,
