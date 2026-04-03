@@ -12,25 +12,27 @@
   .badge {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    min-height: 30px;
-    padding: 0 11px;
+    gap: var(--space-2, 8px);
+    min-height: 28px;
+    padding: 0 var(--space-3, 12px);
     border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--tone) 34%, transparent);
-    background: color-mix(in srgb, var(--tone) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--tone) 24%, var(--color-border));
+    background: color-mix(in srgb, var(--tone) 10%, var(--color-surface));
     color: var(--tone);
-    font-size: 0.84rem;
+    font-family: var(--font-ui, 'Manrope', 'Segoe UI', sans-serif);
+    font-size: 0.8rem;
     font-weight: 600;
     line-height: 1;
+    letter-spacing: 0.01em;
     white-space: nowrap;
   }
 
   .dot {
-    width: 9px;
-    height: 9px;
+    width: 8px;
+    height: 8px;
     border-radius: 999px;
     background: currentColor;
-    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
   }
 
   .tone-success {

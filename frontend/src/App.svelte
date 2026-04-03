@@ -49,8 +49,10 @@
 
   const ACTIVITY_HISTORY_LIMIT = 12;
   const DEFAULT_ACTIVITY_TITLE = 'Runtime event';
+  const THEME_STORAGE_KEY = 'torq-theme';
 
   type ActionName = 'start' | 'stop' | 'restart' | 'new_identity';
+  type ThemeName = 'dark' | 'light';
 
   type ActivityCoalesceKey = 'bootstrap';
 
@@ -63,6 +65,8 @@
     coalesceKey?: ActivityCoalesceKey;
   }
 
+  let theme: ThemeName = 'dark';
+
   async function refreshRuntimeView() {
     const [nextState, nextSnapshot] = await Promise.all([
       fetchTorState(),
@@ -74,8 +78,27 @@
     backendConnected = true;
   }
 
+  function normalizeTheme(value: string | null | undefined): ThemeName {
+    return value === 'light' ? 'light' : 'dark';
+  }
+
+  function applyTheme(nextTheme: ThemeName) {
+    theme = nextTheme;
+    document.documentElement.dataset.theme = nextTheme;
+    localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  }
+
+  function toggleTheme() {
+    applyTheme(theme === 'dark' ? 'light' : 'dark');
+  }
+
   onMount(() => {
     let active = true;
+    const initialTheme = normalizeTheme(
+      document.documentElement.dataset.theme || localStorage.getItem(THEME_STORAGE_KEY),
+    );
+
+    applyTheme(initialTheme);
 
     const initializeRuntimeView = async () => {
       try {
@@ -176,6 +199,8 @@
   $: primaryActionTone = primaryAction === 'start' ? 'primary' : 'danger';
   $: canRunPrimaryAction = primaryAction === 'start' ? canStart : canStop;
   $: backendStatusLabel = backendConnected ? 'desktop backend ready' : 'desktop backend unavailable';
+  $: themeLabel = theme === 'dark' ? 'Dark' : 'Light';
+  $: nextThemeLabel = theme === 'dark' ? 'light' : 'dark';
   $: runtimeStateEmptyMessage = loadErrorMessage
     ? 'Runtime state is unavailable while the desktop backend cannot be read.'
     : 'Reading runtime state from the desktop backend.';
@@ -500,8 +525,22 @@
   <header class="hero">
     <div class="hero-main">
       <div class="hero-copy">
-        <p class="eyebrow">Desktop Runtime</p>
-        <h1>torq</h1>
+        <div class="title-block">
+          <p class="eyebrow">Desktop Runtime</p>
+          <div class="title-row">
+            <h1>torq</h1>
+            <button
+              type="button"
+              class="theme-toggle"
+              aria-label={`Switch to ${nextThemeLabel} theme`}
+              on:click={toggleTheme}
+            >
+              <span class="theme-toggle-label">Theme</span>
+              <span class="theme-toggle-value">{themeLabel}</span>
+            </button>
+          </div>
+        </div>
+
         <div class="hero-meta">
           <StatusBadge
             label={backendStatusLabel}
@@ -592,7 +631,7 @@
 
             <div class="metric">
               <span class="metric-label">Bootstrap</span>
-              <strong class="metric-value">{torState.bootstrap}%</strong>
+              <strong class="metric-value metric-value-mono">{torState.bootstrap}%</strong>
             </div>
 
             {#if torState.status === 'failed'}
