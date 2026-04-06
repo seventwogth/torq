@@ -1,63 +1,172 @@
 # torq
-A control tool for Tor routing, bridge management, and traffic orchestration.
 
-## Development
+Desktop control panel and runtime supervisor for launching Tor, monitoring bootstrap progress, and managing ControlPort features (including **NEWNYM**).
 
-The canonical desktop development entrypoint is the repository root.
+## What this repository contains
 
-1. Install frontend dependencies once:
+`torq` is a Rust + Tauri workspace with three main parts:
+
+- **Desktop shell (`src-tauri`)**: exposes Tauri commands/events, persists runtime settings, and owns a single shared `TorManager` instance.
+- **Runtime engine (`crates/torq-runtime`)**: starts/stops Tor, tails logs, tracks bootstrap/state, and optionally talks to ControlPort.
+- **Frontend (`frontend`)**: Svelte UI for runtime controls, live status, activity feed, and settings.
+
+## Workspace layout
+
+```text
+.
+├── Cargo.toml                  # Rust workspace manifest
+├── crates/
+│   ├── torq-core/              # Shared runtime domain types (state/events/errors)
+│   └── torq-runtime/           # Tor process + control supervision
+├── frontend/                   # Svelte + Vite + Tauri API UI
+├── src-tauri/                  # Desktop backend (Tauri host)
+└── scripts/
+    └── mock-tor.cmd            # Fake tor process for smoke tests
+```
+
+## Prerequisites
+
+### Required
+
+- **Rust toolchain** (stable)
+- **Node.js + npm**
+- A Tor executable (or the included mock script for local smoke testing)
+
+### Platform notes
+
+Root `package.json` scripts currently use `npm.cmd` and Windows-style paths, so they are **Windows-oriented**.
+On non-Windows systems, use direct `frontend` scripts and Rust commands shown below.
+
+## Quick start (desktop app)
+
+### 1) Install frontend dependencies
+
+From repository root:
 
 ```powershell
 npm run setup
 ```
 
-2. Start the desktop app in dev mode from the repository root:
+Equivalent direct command (cross-platform-friendly):
+
+```bash
+npm install --prefix frontend
+```
+
+### 2) Run the desktop app in dev mode
+
+From repository root:
 
 ```powershell
 npm run tauri:dev
 ```
 
-Root-level scripts:
+This starts Vite (`http://127.0.0.1:1420`) and the Tauri desktop host.
 
-- `npm run tauri:dev` starts the Tauri desktop app and the Vite dev server.
-- `npm run build` builds the frontend only.
-- `npm run tauri:build` builds the desktop app.
-- `npm run check` runs frontend checks plus `cargo fmt --all --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+## Build commands
 
-Useful environment variables:
+From repository root:
 
-- `TORQ_TOR_EXE` points the desktop/runtime backend at a Tor binary. If unset, the app tries `tor.exe`.
-- `TORQ_TOR_LOG` overrides the runtime log path. If unset, the app uses `tor.log` in the repo root.
+- `npm run build` — build frontend only.
+- `npm run tauri:build` — build desktop app.
+- `npm run check` — run frontend checks + `cargo fmt --all --check` + `cargo test --workspace` + `cargo clippy --workspace --all-targets --locked -- -D warnings`.
 
-Tauri config lives in [src-tauri/tauri.conf.json](/C:/Users/stargazer/github/torq/src-tauri/tauri.conf.json).
-Frontend sources live in [frontend](/C:/Users/stargazer/github/torq/frontend).
+If you are not on Windows, run these directly instead:
 
-## Runtime config
+```bash
+npm --prefix frontend run check
+cargo fmt --all --check
+cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
 
-The desktop backend stores runtime configuration as JSON in `torq.config.json`.
-By default it uses a user-level config path such as `%APPDATA%\torq\torq.config.json` on Windows, with a current-directory fallback if no user config root is available.
+## Desktop backend API (Tauri)
 
-On startup the backend loads config from that file into a small in-memory config store.
-If the file is missing, it falls back to the bootstrap defaults from `TORQ_TOR_EXE` / `TORQ_TOR_LOG` (or `tor.exe` / `tor.log` when those env vars are unset).
+### Invoke commands
 
-Configuration updates are persisted through the backend API and are only accepted while Tor is not active.
-If runtime is in `Starting` or `Running`, `set_runtime_config` is rejected instead of hot-reloading the process.
+- `tor_state`
+- `tor_runtime_snapshot`
+- `tor_start`
+- `tor_stop`
+- `tor_restart`
+- `tor_new_identity`
+- `get_runtime_config`
+- `set_runtime_config`
 
-## Runtime CLI smoke test
+### Emitted events
 
-Run the CLI example from the workspace root:
+- `tor://state`
+- `tor://runtime-snapshot`
+- `tor://activity`
+
+The frontend subscribes to all three for live updates.
+
+## Runtime configuration
+
+The desktop backend persists runtime config to:
+
+- `%APPDATA%\torq\torq.config.json` on Windows when `APPDATA` is available.
+- `$XDG_CONFIG_HOME/torq/torq.config.json` when `XDG_CONFIG_HOME` is set.
+- `$HOME/.config/torq/torq.config.json` when `HOME` is available.
+- `./torq.config.json` fallback in current working directory when none of the above are available.
+
+### Bootstrap defaults
+
+If no config file exists, backend defaults are derived from:
+
+- `TORQ_TOR_EXE` (fallback: `tor.exe`)
+- `TORQ_TOR_LOG` (fallback: `tor.log`)
+
+### Config update behavior
+
+`set_runtime_config` updates runtime + file persistence atomically (with rollback on persistence failure).
+Runtime config changes are rejected while runtime status is `starting` or `running`; edit settings when Tor is stopped.
+
+## `torq-runtime` CLI (smoke test)
+
+You can run the runtime engine directly without the desktop shell:
 
 ```powershell
 cargo run -p torq-runtime -- path\to\tor.exe .\tor.log
 ```
 
-You can also set `TORQ_TOR_EXE` instead of passing the path as the first argument.
+Interactive commands:
 
-The CLI is an interactive runtime smoke-test. Type `start`, `stop`, `restart`,
-`newnym`, `state`, or `quit` in stdin.
+- `start`
+- `stop`
+- `restart`
+- `newnym`
+- `state`
+- `exit` / `quit`
 
-For a local smoke test without a real Tor install:
+### CLI options
+
+```text
+cargo run -p torq-runtime -- [tor-path] [log-path] [--working-dir DIR] [--no-managed-log] [-- extra tor args]
+```
+
+- `--working-dir DIR` — sets Tor process working directory.
+- `--no-managed-log` — external log mode; runtime only tails an existing log file.
+- `--` — everything after is passed to Tor as extra args.
+
+### Local mock smoke test (no Tor install)
 
 ```powershell
 cargo run -p torq-runtime -- cmd.exe .\tor.log -- /C scripts\mock-tor.cmd
 ```
+
+## Frontend notes
+
+- Theme toggle (dark/light) is persisted in `localStorage` (`torq-theme`).
+- Settings panel allows editing runtime paths, log mode, torrc usage, working directory, control settings, and timeouts.
+- Activity feed coalesces bootstrap messages and keeps recent history.
+
+## Key files
+
+- Root workspace manifest: `Cargo.toml`
+- Desktop backend: `src-tauri/src/lib.rs`
+- Runtime config DTO + validation: `src-tauri/src/runtime_config.rs`
+- Runtime engine entrypoint: `crates/torq-runtime/src/main.rs`
+- Frontend app shell: `frontend/src/App.svelte`
+- Tauri API client in frontend: `frontend/src/lib/torq-api.ts`
+- Tauri app config: `src-tauri/tauri.conf.json`
