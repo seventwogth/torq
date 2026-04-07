@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, Duration};
@@ -124,20 +124,12 @@ impl TorManager {
         self.command_tx.clone()
     }
 
-    pub fn state_receiver(&self) -> watch::Receiver<TorState> {
-        self.state_rx.clone()
-    }
-
     pub fn state(&self) -> watch::Receiver<TorState> {
         self.state_rx.clone()
     }
 
     pub fn current_state(&self) -> TorState {
         *self.state_rx.borrow()
-    }
-
-    pub fn runtime_state_receiver(&self) -> watch::Receiver<TorRuntimeSnapshot> {
-        self.runtime_state_rx.clone()
     }
 
     pub fn runtime_state(&self) -> watch::Receiver<TorRuntimeSnapshot> {
@@ -160,11 +152,7 @@ impl TorManager {
         self.command_tx
             .send(command)
             .await
-            .map_err(|_| anyhow!("tor runtime supervisor is not available"))
-    }
-
-    pub async fn send_command(&self, command: TorCommand) -> Result<()> {
-        self.send(command).await
+            .context("tor runtime supervisor is not available")
     }
 
     pub async fn start(&self) -> Result<()> {
@@ -193,11 +181,11 @@ impl TorManager {
                 reply: reply_tx,
             })
             .await
-            .map_err(|_| anyhow!("tor runtime supervisor is not available"))?;
+            .context("tor runtime supervisor is not available")?;
 
         reply_rx
             .await
-            .map_err(|_| anyhow!("tor runtime supervisor did not respond to config update"))?
+            .context("tor runtime supervisor did not respond to config update")?
             .map_err(anyhow::Error::msg)
     }
 }
