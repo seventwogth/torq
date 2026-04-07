@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use torq_core::{TorCommand, TorEvent, TorState};
 
-use crate::config::TorRuntimeConfig;
+use crate::config::{validate_runtime_config, TorRuntimeConfig};
 use crate::runtime_events::{RuntimeEventSender, RUNTIME_EVENT_QUEUE_CAPACITY};
 use crate::runtime_state::TorRuntimeSnapshot;
 
@@ -132,12 +132,4 @@ impl TorManager {
             .context("tor runtime supervisor did not respond to config update")?
             .map_err(anyhow::Error::msg)
     }
-}
-
-fn validate_runtime_config(config: &TorRuntimeConfig) -> Result<()> {
-    if config.tor_path.as_os_str().is_empty() {
-        return Err(anyhow!("runtime config requires a non-empty tor_path"));
-    }
-
-    Ok(())
 }

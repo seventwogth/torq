@@ -86,9 +86,30 @@ async fn runtime_config_rejects_empty_tor_path() {
         .await
         .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("runtime config requires a non-empty tor_path"));
+    assert!(error.to_string().contains("tor_path must not be empty"));
+}
+
+#[tokio::test]
+async fn runtime_config_rejects_empty_control_host() {
+    let manager = TorManager::new(TorRuntimeConfig::new(
+        "tor.exe",
+        unique_test_path("config-validation-control.log"),
+    ))
+    .await
+    .unwrap();
+
+    let invalid_config = TorRuntimeConfig::new(
+        "tor.exe",
+        unique_test_path("config-validation-control-next.log"),
+    )
+    .with_control(TorControlConfig::new(" ", 9051, TorControlAuth::Null));
+
+    let error = manager
+        .set_runtime_config(invalid_config)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("control.host must not be empty"));
 }
 
 #[tokio::test]

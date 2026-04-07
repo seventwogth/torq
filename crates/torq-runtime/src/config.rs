@@ -1,8 +1,11 @@
 use std::ffi::OsString;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::control::TorControlConfig;
+use thiserror::Error;
+
+use crate::control::{TorControlAuth, TorControlConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogMode {
@@ -39,6 +42,18 @@ pub struct TorRuntimeConfig {
     pub control: Option<TorControlConfig>,
     pub stop_timeout: Duration,
     pub log_poll_interval: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RuntimeConfigValidationError {
+    #[error("{field} must not be empty")]
+    EmptyField { field: &'static str },
+}
+
+impl RuntimeConfigValidationError {
+    pub const fn empty_field(field: &'static str) -> Self {
+        Self::EmptyField { field }
+    }
 }
 
 impl TorRuntimeConfig {
@@ -114,5 +129,149 @@ impl TorRuntimeConfig {
     pub fn with_log_poll_interval(mut self, log_poll_interval: Duration) -> Self {
         self.log_poll_interval = log_poll_interval;
         self
+    }
+
+    pub fn validate(&self) -> Result<(), RuntimeConfigValidationError> {
+        validate_runtime_config(self)
+    }
+}
+
+pub fn validate_runtime_config(
+    config: &TorRuntimeConfig,
+) -> Result<(), RuntimeConfigValidationError> {
+    validate_non_empty_path(&config.tor_path, "tor_path")?;
+
+    if let Some(working_dir) = config.working_dir.as_ref() {
+        validate_non_empty_path(working_dir, "working_dir")?;
+    }
+
+    if config.use_torrc {
+        match config.torrc_path.as_ref() {
+            Some(torrc_path) => validate_non_empty_path(torrc_path, "torrc_path")?,
+            None => return Err(RuntimeConfigValidationError::empty_field("torrc_path")),
+        }
+    }
+
+    if let Some(control) = config.control.as_ref() {
+        validate_non_empty_string(&control.host, "control.host")?;
+
+        if let TorControlAuth::Cookie { cookie_path } = &control.auth {
+            validate_non_empty_path(cookie_path, "control.auth.cookie_path")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_non_empty_string(
+    value: &str,
+    field: &'static str,
+) -> Result<(), RuntimeConfigValidationError> {
+    if value.trim().is_empty() {
+        return Err(RuntimeConfigValidationError::empty_field(field));
+    }
+
+    Ok(())
+}
+
+fn validate_non_empty_path(
+    value: &Path,
+    field: &'static str,
+) -> Result<(), RuntimeConfigValidationError> {
+    if value.as_os_str().to_string_lossy().trim().is_empty() {
+        return Err(RuntimeConfigValidationError::empty_field(field));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::control::{TorControlAuth, TorControlConfig};
+
+    use super::{RuntimeConfigValidationError, TorRuntimeConfig};
+
+    #[test]
+    fn rejects_empty_working_dir() {
+        let error = TorRuntimeConfig::new("tor.exe", "tor.log")
+            .with_working_dir("   ")
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RuntimeConfigValidationError::EmptyField {
+                field: "working_dir",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_missing_torrc_path_when_enabled() {
+        let error = TorRuntimeConfig::new("tor.exe", "tor.log")
+            .with_use_torrc(true)
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RuntimeConfigValidationError::EmptyField {
+                field: "torrc_path",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_torrc_path_when_enabled() {
+        let error = TorRuntimeConfig::new("tor.exe", "tor.log")
+            .with_torrc_path(" ")
+            .with_use_torrc(true)
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RuntimeConfigValidationError::EmptyField {
+                field: "torrc_path",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_control_host() {
+        let error = TorRuntimeConfig::new("tor.exe", "tor.log")
+            .with_control(TorControlConfig::new(" ", 9051, TorControlAuth::Null))
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RuntimeConfigValidationError::EmptyField {
+                field: "control.host",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_cookie_path() {
+        let error = TorRuntimeConfig::new("tor.exe", "tor.log")
+            .with_control(TorControlConfig::new(
+                "127.0.0.1",
+                9051,
+                TorControlAuth::Cookie {
+                    cookie_path: PathBuf::from(" "),
+                },
+            ))
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            RuntimeConfigValidationError::EmptyField {
+                field: "control.auth.cookie_path",
+            }
+        );
     }
 }
