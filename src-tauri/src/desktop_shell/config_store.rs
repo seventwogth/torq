@@ -6,7 +6,7 @@ use std::sync::RwLock;
 
 use torq_runtime::TorRuntimeConfig;
 
-use crate::runtime_config::{RuntimeConfigDto, RuntimeConfigError};
+use super::runtime_config::{RuntimeConfigDto, RuntimeConfigError};
 
 pub struct RuntimeConfigStore {
     path: PathBuf,
