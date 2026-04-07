@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use torq_runtime::{LogMode, TorControlAuth, TorControlConfig, TorRuntimeConfig};
+use torq_runtime::{
+    LogMode, RuntimeConfigValidationError, TorControlAuth, TorControlConfig, TorRuntimeConfig,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,13 +66,9 @@ impl TryFrom<RuntimeControlAuth> for TorControlAuth {
     fn try_from(value: RuntimeControlAuth) -> Result<Self, Self::Error> {
         match value {
             RuntimeControlAuth::Null => Ok(TorControlAuth::Null),
-            RuntimeControlAuth::Cookie { cookie_path } => {
-                let cookie_path =
-                    normalize_non_empty_path(cookie_path, "control.auth.cookie_path")?;
-                Ok(TorControlAuth::Cookie {
-                    cookie_path: PathBuf::from(cookie_path),
-                })
-            }
+            RuntimeControlAuth::Cookie { cookie_path } => Ok(TorControlAuth::Cookie {
+                cookie_path: PathBuf::from(cookie_path),
+            }),
         }
     }
 }
@@ -96,9 +94,11 @@ impl TryFrom<RuntimeControlConfig> for TorControlConfig {
     type Error = RuntimeConfigError;
 
     fn try_from(value: RuntimeControlConfig) -> Result<Self, Self::Error> {
-        let host = normalize_non_empty_path(value.host, "control.host")?;
-        let auth = value.auth.try_into()?;
-        Ok(TorControlConfig::new(host, value.port, auth))
+        Ok(TorControlConfig::new(
+            value.host,
+            value.port,
+            value.auth.try_into()?,
+        ))
     }
 }
 
@@ -146,32 +146,17 @@ impl RuntimeConfigDto {
     }
 
     pub fn validate(&self) -> Result<(), RuntimeConfigError> {
-        normalize_non_empty_path(self.tor_path.clone(), "tor_path")?;
-
-        if let Some(working_dir) = self.working_dir.as_ref() {
-            normalize_non_empty_path(working_dir.clone(), "working_dir")?;
-        }
-
-        if self.use_torrc {
-            match self.torrc_path.as_ref().map(|value| value.trim()) {
-                Some(value) if !value.is_empty() => {}
-                _ => return Err(RuntimeConfigError::empty_field("torrc_path")),
-            }
-        }
-
-        if let Some(control) = self.control.as_ref() {
-            normalize_non_empty_path(control.host.clone(), "control.host")?;
-            if let RuntimeControlAuth::Cookie { cookie_path } = &control.auth {
-                normalize_non_empty_path(cookie_path.clone(), "control.auth.cookie_path")?;
-            }
-        }
-
+        self.clone().into_runtime_config_unvalidated()?.validate()?;
         Ok(())
     }
 
     pub fn try_into_runtime_config(self) -> Result<TorRuntimeConfig, RuntimeConfigError> {
-        self.validate()?;
+        let config = self.into_runtime_config_unvalidated()?;
+        config.validate()?;
+        Ok(config)
+    }
 
+    fn into_runtime_config_unvalidated(self) -> Result<TorRuntimeConfig, RuntimeConfigError> {
         let Self {
             tor_path,
             log_path,
@@ -245,6 +230,14 @@ impl RuntimeConfigError {
     }
 }
 
+impl From<RuntimeConfigValidationError> for RuntimeConfigError {
+    fn from(value: RuntimeConfigValidationError) -> Self {
+        match value {
+            RuntimeConfigValidationError::EmptyField { field } => Self::EmptyField { field },
+        }
+    }
+}
+
 impl fmt::Display for RuntimeConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -254,18 +247,6 @@ impl fmt::Display for RuntimeConfigError {
 }
 
 impl Error for RuntimeConfigError {}
-
-fn normalize_non_empty_path(
-    value: impl Into<String>,
-    field: &'static str,
-) -> Result<String, RuntimeConfigError> {
-    let value = value.into();
-    if value.trim().is_empty() {
-        return Err(RuntimeConfigError::empty_field(field));
-    }
-
-    Ok(value)
-}
 
 fn normalize_optional_string(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
@@ -405,6 +386,60 @@ mod tests {
             error,
             RuntimeConfigError::EmptyField {
                 field: "control.auth.cookie_path",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_control_host() {
+        let dto = RuntimeConfigDto {
+            tor_path: "tor.exe".to_string(),
+            log_path: "tor.log".to_string(),
+            log_mode: RuntimeLogMode::Managed,
+            torrc_path: None,
+            use_torrc: false,
+            args: vec![],
+            working_dir: None,
+            control: Some(RuntimeControlConfig {
+                host: " ".to_string(),
+                port: 9051,
+                auth: RuntimeControlAuth::Null,
+            }),
+            stop_timeout_ms: 5_000,
+            log_poll_interval_ms: 250,
+        };
+
+        let error = dto.try_into_runtime_config().unwrap_err();
+
+        assert_eq!(
+            error,
+            RuntimeConfigError::EmptyField {
+                field: "control.host",
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_empty_working_dir() {
+        let dto = RuntimeConfigDto {
+            tor_path: "tor.exe".to_string(),
+            log_path: "tor.log".to_string(),
+            log_mode: RuntimeLogMode::Managed,
+            torrc_path: None,
+            use_torrc: false,
+            args: vec![],
+            working_dir: Some(" ".to_string()),
+            control: None,
+            stop_timeout_ms: 5_000,
+            log_poll_interval_ms: 250,
+        };
+
+        let error = dto.try_into_runtime_config().unwrap_err();
+
+        assert_eq!(
+            error,
+            RuntimeConfigError::EmptyField {
+                field: "working_dir",
             }
         );
     }
