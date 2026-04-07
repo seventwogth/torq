@@ -505,8 +505,8 @@ pub fn run() {
             let Some(manager) = app_state.manager.as_ref() else {
                 return Ok(());
             };
-            let state_rx = manager.state_receiver();
-            let runtime_state_rx = manager.runtime_state_receiver();
+            let state_rx = manager.state();
+            let runtime_state_rx = manager.runtime_state();
             let mut activity_rx = manager.subscribe_events();
 
             tauri::async_runtime::spawn({

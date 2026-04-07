@@ -2,18 +2,18 @@
   "name": "torq",
   "private": true,
   "scripts": {
-    "setup": "npm.cmd run frontend:install",
-    "dev": "npm.cmd run tauri:dev",
-    "frontend:install": "npm.cmd install --prefix frontend",
-    "frontend:dev": "npm.cmd --prefix frontend run dev",
-    "frontend:build": "npm.cmd --prefix frontend run build",
-    "frontend:check": "npm.cmd --prefix frontend run check",
-    "tauri:dev": "frontend\\node_modules\\.bin\\tauri.cmd dev --config src-tauri/tauri.conf.json",
-    "tauri:build": "frontend\\node_modules\\.bin\\tauri.cmd build --config src-tauri/tauri.conf.json",
-    "build": "npm.cmd run frontend:build",
+    "setup": "npm run frontend:install",
+    "dev": "npm run tauri:dev",
+    "frontend:install": "npm --prefix frontend install",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:check": "npm --prefix frontend run check",
+    "tauri:dev": "npm exec --prefix frontend tauri -- dev --config src-tauri/tauri.conf.json",
+    "tauri:build": "npm exec --prefix frontend tauri -- build --config src-tauri/tauri.conf.json",
+    "build": "npm run frontend:build",
     "cargo:fmt": "cargo fmt --all --check",
-    "cargo:test": "cargo test --workspace",
+    "cargo:test": "cargo test --workspace --locked",
     "cargo:clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings",
-    "check": "npm.cmd run frontend:check && npm.cmd run cargo:fmt && npm.cmd run cargo:test && npm.cmd run cargo:clippy"
+    "check": "npm run frontend:check && npm run cargo:fmt && npm run cargo:test && npm run cargo:clippy"
   }
 }

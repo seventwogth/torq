@@ -42,8 +42,8 @@ See `SECURITY.md` for the high-level threat model, trust boundaries, ControlPort
 
 ### Platform notes
 
-Root `package.json` scripts currently use `npm.cmd` and Windows-style paths, so they are **Windows-oriented**.
-On non-Windows systems, use direct `frontend` scripts and Rust commands shown below.
+Root `package.json` scripts are now cross-platform for Node-based frontend and Tauri commands.
+Runtime smoke tests in `torq-runtime` still include Windows-oriented fixtures (`cmd.exe`, PowerShell, and `scripts/mock-tor.cmd`), so the full Rust test suite is best exercised on Windows CI.
 
 ## Quick start (desktop app)
 
@@ -77,7 +77,14 @@ From repository root:
 
 - `npm run build` — build frontend only.
 - `npm run tauri:build` — build desktop app.
-- `npm run check` — run frontend checks + `cargo fmt --all --check` + `cargo test --workspace` + `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+- `npm run check` — run frontend checks + `cargo fmt --all --check` + `cargo test --workspace --locked` + `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+
+## CI
+
+GitHub Actions now runs a two-lane CI setup:
+
+- `Quality And Smoke Build (Ubuntu)` installs the current frontend and Rust toolchains, runs frontend checks/build, enforces `cargo fmt` and `clippy`, and performs a Tauri `--no-bundle` smoke build.
+- `Windows Rust Tests` runs `cargo test --workspace --locked` on Windows because the runtime test fixtures use `cmd.exe`, PowerShell, and `scripts/mock-tor.cmd`.
 
 If you are not on Windows, run these directly instead:
 
