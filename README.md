@@ -24,6 +24,14 @@ Desktop control panel and runtime supervisor for launching Tor, monitoring boots
     └── mock-tor.cmd            # Fake tor process for smoke tests
 ```
 
+## Architecture
+
+See `ARCHITECTURE.md` for a short overview of the runtime engine, desktop shell, and frontend, and how `TorManager` supervises the Tor process and ControlPort.
+
+## Security model
+
+See `SECURITY.md` for the high-level threat model, trust boundaries, ControlPort authentication considerations, and recommendations for securing configuration, logs, and the Tor binary.
+
 ## Prerequisites
 
 ### Required
